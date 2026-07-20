@@ -1,0 +1,137 @@
+name: Build Hardened Golden AMI
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # Allows manual trigger
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  build-and-test:
+    name: Build & Test Golden AMI
+    runs-on: ubuntu-22.04
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ------------------------------
+      # STEP 1: Install Packer
+      # ------------------------------
+      - name: Install Packer
+        run: |
+          wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+          sudo apt update && sudo apt install -y packer
+          packer version
+
+      # ------------------------------
+      # STEP 2: Configure AWS credentials from GitHub Secrets
+      # ------------------------------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ------------------------------
+      # STEP 3: Validate Packer template
+      # ------------------------------
+      - name: Validate Packer template
+        run: |
+          cd packer
+          packer init .
+          packer validate .
+
+      # ------------------------------
+      # STEP 4: Build the Golden AMI
+      # ------------------------------
+      - name: Build AMI with Packer
+        id: packer_build
+        run: |
+          cd packer
+          packer build -var "aws_region=${{ env.AWS_REGION }}" golden-image.pkr.hcl 2>&1 | tee packer_output.txt
+          
+          # Extract AMI ID from output
+          AMI_ID=$(grep -oP 'ami-[a-z0-9]+' packer_output.txt | tail -1)
+          echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
+          echo "Built AMI: $AMI_ID"
+
+      # ------------------------------
+      # STEP 5: Install Terraform
+      # ------------------------------
+      - name: Install Terraform
+        run: |
+          wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+          sudo apt update && sudo apt install -y terraform
+          terraform version
+
+      # ------------------------------
+      # STEP 6: Deploy test VM with Terraform
+      # ------------------------------
+      - name: Terraform Deploy Test VM
+        run: |
+          cd terraform
+          terraform init
+          terraform plan -var="ami_id=${{ steps.packer_build.outputs.ami_id }}"
+          terraform apply -var="ami_id=${{ steps.packer_build.outputs.ami_id }}" -auto-approve
+          echo "Test VM deployed successfully!"
+
+      # ------------------------------
+      # STEP 7: Wait for VM to be ready
+      # ------------------------------
+      - name: Wait for VM to boot
+        run: sleep 60
+
+      # ------------------------------
+      # STEP 8: Run OpenSCAP compliance scan on the live VM
+      # ------------------------------
+      - name: Run OpenSCAP compliance scan
+        run: |
+          # Get VM IP from Terraform output
+          cd terraform
+          VM_IP=$(terraform output -raw vm_public_ip)
+          
+          # Install OpenSCAP on the VM via SSH and run scan
+          ssh -o StrictHostKeyChecking=no ubuntu@$VM_IP "sudo apt update && sudo apt install -y libopenscap8 openscap-scanner bzip2"
+          ssh -o StrictHostKeyChecking=no ubuntu@$VM_IP "sudo oscap xccdf eval --profile xccdf_org.ssgproject.content_profile_cis_level1_server --results-arf /tmp/arf.xml --report /tmp/compliance_report.html /usr/share/ubuntu-scap-security-guides/1/benchmarks/ssg-ubuntu2204-ds.xml"
+          
+          # Download the report as a pipeline artifact
+          mkdir -p ./openscap-reports
+          scp -o StrictHostKeyChecking=no ubuntu@$VM_IP:/tmp/compliance_report.html ./openscap-reports/
+          scp -o StrictHostKeyChecking=no ubuntu@$VM_IP:/tmp/arf.xml ./openscap-reports/
+          
+          echo "OpenSCAP reports downloaded to ./openscap-reports/"
+
+      # ------------------------------
+      # STEP 9: Upload OpenSCAP reports as artifacts
+      # ------------------------------
+      - name: Upload OpenSCAP reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: openscap-reports
+          path: ./openscap-reports/
+
+      # ------------------------------
+      # STEP 10: Destroy everything (cleanup)
+      # ------------------------------
+      - name: Terraform Destroy (Cleanup)
+        if: always()  # Runs even if previous steps fail
+        run: |
+          cd terraform
+          terraform destroy -var="ami_id=${{ steps.packer_build.outputs.ami_id }}" -auto-approve
+          echo "All resources destroyed."
+
+      # ------------------------------
+      # STEP 11: (Optional) Deregister old AMIs to save cost
+      # ------------------------------
+      - name: Cleanup old AMIs
+        if: always()
+        run: |
+          # Keep only the 3 most recent AMIs with this name pattern
+          aws ec2 describe-images --owners self --filters "Name=name,Values=golden-image-*" --query 'Images | sort_by(@, &CreationDate) | reverse(@) | [3:].ImageId' --output text | xargs -r -n1 aws ec2 deregister-image --image-id
