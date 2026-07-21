@@ -63,7 +63,7 @@ build {
   # PROVISIONER 2: Run Ansible hardening playbook (ansible-local)
   # ------------------------------
   provisioner "ansible-local" {
-    playbook_file   = "../ansible/hardening.yml"
+    playbook_file   = "../ansible/playbook/hardening.yml"
     extra_arguments = ["--verbose"]
     # The ansible-local provisioner uploads the playbook and runs it locally on the VM
   }
