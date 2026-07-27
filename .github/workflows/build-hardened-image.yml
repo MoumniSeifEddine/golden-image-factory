@@ -124,6 +124,7 @@ jobs:
         if: always()  # Runs even if previous steps fail
         run: |
           cd terraform
+          terraform init
           terraform destroy -var="ami_id=${{ steps.packer_build.outputs.ami_id }}" -auto-approve
           echo "All resources destroyed."
 

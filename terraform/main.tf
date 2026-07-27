@@ -43,7 +43,7 @@ resource "aws_instance" "test_vm" {
   vpc_security_group_ids = [aws_security_group.test_vm.id]
 
   # Ensure we can SSH in to run OpenSCAP
-  key_name = "your-key-pair-name"  # <-- CHANGE THIS to your key pair name
+  key_name = "vockey"  # <-- CHANGE THIS to your key pair name
 
   tags = {
     Name = "golden-test-vm"
