@@ -1,3 +1,19 @@
+# Variables
+variable "aws_region" {
+  type    = string
+  default = "us-east-1"
+}
+
+variable "instance_type" {
+  type    = string
+  default = "t2.micro"
+}
+
+variable "ami_name_prefix" {
+  type    = string
+  default = "golden-image"
+}
+
 # Required plugins
 packer {
   required_plugins {
@@ -17,7 +33,6 @@ source "amazon-ebs" "golden-image" {
   region = var.aws_region
   instance_type = var.instance_type
 
-  # Dynamically find the latest Ubuntu 22.04 LTS AMI[reference:0][reference:1]
   source_ami_filter {
     filters = {
       name                = "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"
@@ -25,7 +40,7 @@ source "amazon-ebs" "golden-image" {
       virtualization-type = "hvm"
     }
     most_recent = true
-    owners      = ["099720109477"]  # Canonical's official AWS account ID
+    owners      = ["099720109477"]
   }
 
   ssh_username = "ubuntu"
@@ -55,7 +70,6 @@ build {
     inline = [
       "sudo apt update -y",
       "sudo apt install -y python3 python3-pip python3-apt software-properties-common",
-      # Ansible will be installed by the ansible-local provisioner
     ]
   }
 
@@ -65,7 +79,6 @@ build {
   provisioner "ansible-local" {
     playbook_file   = "../ansible/playbook/hardening.yml"
     extra_arguments = ["--verbose"]
-    # The ansible-local provisioner uploads the playbook and runs it locally on the VM
   }
 
   # ------------------------------
@@ -73,16 +86,27 @@ build {
   # ------------------------------
   provisioner "shell" {
     inline = [
-      # Install Trivy
       "sudo apt install -y wget",
       "wget https://github.com/aquasecurity/trivy/releases/download/v0.50.4/trivy_0.50.4_Linux-64bit.deb",
       "sudo dpkg -i trivy_0.50.4_Linux-64bit.deb",
       "rm trivy_0.50.4_Linux-64bit.deb",
-      
-      # Run filesystem scan on root, exit with error if CRITICAL or HIGH found[reference:2]
       "echo 'Running Trivy filesystem scan...'",
       "sudo trivy fs --severity CRITICAL,HIGH --exit-code 1 / || exit 1",
       "echo 'Trivy scan passed - no CRITICAL or HIGH vulnerabilities found.'"
+    ]
+  }
+
+  # ------------------------------
+  # PROVISIONER 4: Run OpenSCAP compliance scan (NEW)
+  # ------------------------------
+  provisioner "shell" {
+    inline = [
+      "sudo apt update",
+      "sudo apt install -y openscap-scanner scap-security-guide bzip2",
+      "echo 'Running OpenSCAP compliance scan...'",
+      "sudo oscap xccdf eval --profile xccdf_org.ssgproject.content_profile_cis_level1_server --results-arf /tmp/arf.xml --report /tmp/compliance_report.html /usr/share/ubuntu-scap-security-guides/1/benchmarks/ssg-ubuntu2204-ds.xml || true",
+      "sudo cp /tmp/compliance_report.html /tmp/arf.xml /home/ubuntu/",
+      "echo 'OpenSCAP scan completed. Reports saved in /tmp/'"
     ]
   }
 
