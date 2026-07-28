@@ -11,7 +11,7 @@ provider "aws" {
   region = var.aws_region
 }
 
-# Use the DEFAULT VPC that AWS Academy automatically created
+# Use the DEFAULT VPC that AWS Academy automatically created (No creation)
 data "aws_vpc" "default" {
   default = true
 }
