@@ -11,39 +11,23 @@ provider "aws" {
   region = var.aws_region
 }
 
-# Security group: only allow SSH from the GitHub Actions runner IP
-resource "aws_security_group" "test_vm" {
-  name_prefix = "golden-test-"
+# Use the DEFAULT VPC that AWS Academy automatically created
+data "aws_vpc" "default" {
+  default = true
+}
 
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]  # For testing only - your OpenSCAP scan will flag this
-    description = "SSH access (temporary for testing)"
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "golden-test-sg"
-  }
+# Use the DEFAULT security group that already exists (NO creation required!)
+data "aws_security_group" "default" {
+  name   = "default"
+  vpc_id = data.aws_vpc.default.id
 }
 
 # Test EC2 instance using the golden AMI
 resource "aws_instance" "test_vm" {
-  ami           = var.ami_id
-  instance_type = var.instance_type
-
-  vpc_security_group_ids = [aws_security_group.test_vm.id]
-
-  # Ensure we can SSH in to run OpenSCAP
-  key_name = "vockey"  # <-- CHANGE THIS to your key pair name
+  ami                    = var.ami_id
+  instance_type          = var.instance_type
+  vpc_security_group_ids = [data.aws_security_group.default.id]
+  key_name               = "vockey"
 
   tags = {
     Name = "golden-test-vm"
