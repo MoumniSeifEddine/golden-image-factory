@@ -17,14 +17,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ------------------------------
+            # ------------------------------
       # STEP 1: Install Packer (Direct Binary)
       # ------------------------------
       - name: Install Packer
         run: |
           cd /tmp
           wget https://releases.hashicorp.com/packer/1.11.2/packer_1.11.2_linux_amd64.zip
-          unzip packer_1.11.2_linux_amd64.zip
+          unzip -o packer_1.11.2_linux_amd64.zip
           sudo mv packer /usr/local/bin/
           packer version
 
@@ -62,14 +62,14 @@ jobs:
           echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
           echo "Built AMI: $AMI_ID"
 
-      # ------------------------------
+            # ------------------------------
       # STEP 5: Install Terraform (Direct Binary)
       # ------------------------------
       - name: Install Terraform
         run: |
           cd /tmp
           wget https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip
-          unzip terraform_1.9.8_linux_amd64.zip
+          unzip -o terraform_1.9.8_linux_amd64.zip
           sudo mv terraform /usr/local/bin/
           terraform version
 
