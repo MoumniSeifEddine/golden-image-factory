@@ -55,15 +55,22 @@ jobs:
         id: packer_build
         run: |
           cd packer
-          packer build -var "aws_region=${{ env.AWS_REGION }}" golden-image.pkr.hcl 2>&1 | tee packer_output.txt       
-             
-          # Extract AMI ID from output
+          packer build golden-image.pkr.hcl 2>&1 | tee packer_output.txt
+          
+          # Extract AMI ID from output (more robust method)
           AMI_ID=$(grep -oP 'ami-[a-z0-9]+' packer_output.txt | tail -1)
           echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
           echo "Built AMI: $AMI_ID"
           
-          # Save AMI ID to file for artifact
+          # Also save to a file as backup
           echo $AMI_ID > ami_id.txt
+          
+      # Save AMI ID as an artifact for debugging
+      - name: Save AMI ID artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ami-id
+          path: packer/ami_id.txt
 
       # ------------------------------
       # STEP 5: Install Terraform (Direct Binary)
