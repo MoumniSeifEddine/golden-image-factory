@@ -55,8 +55,8 @@ jobs:
         id: packer_build
         run: |
           cd packer
-          packer build -var-file="variables.pkr.hcl" -var "aws_region=${{ env.AWS_REGION }}" golden-image.pkr.hcl 2>&1 | tee packer_output.txt
-          
+          packer build -var "aws_region=${{ env.AWS_REGION }}" golden-image.pkr.hcl 2>&1 | tee packer_output.txt       
+             
           # Extract AMI ID from output
           AMI_ID=$(grep -oP 'ami-[a-z0-9]+' packer_output.txt | tail -1)
           echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
