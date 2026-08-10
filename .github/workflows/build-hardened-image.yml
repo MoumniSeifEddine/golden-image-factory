@@ -2,7 +2,9 @@ name: Build Hardened Golden AMI
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+
   workflow_dispatch:
 
 env:
@@ -12,25 +14,44 @@ jobs:
   build-and-test:
     name: Build & Test Golden AMI
     runs-on: ubuntu-22.04
-    
+
     steps:
+
+      # =====================================================
+      # STEP 1: Checkout repository
+      # =====================================================
+
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ------------------------------
-      # STEP 1: Install Packer
-      # ------------------------------
+
+      # =====================================================
+      # STEP 2: Install Packer
+      # =====================================================
+
       - name: Install Packer
+        shell: bash
         run: |
+          set -euo pipefail
+
+          PACKER_VERSION="1.11.2"
+
           cd /tmp
-          wget https://releases.hashicorp.com/packer/1.11.2/packer_1.11.2_linux_amd64.zip
-          unzip -o packer_1.11.2_linux_amd64.zip
-          sudo mv packer /usr/local/bin/
+
+          wget -q \
+            "https://releases.hashicorp.com/packer/${PACKER_VERSION}/packer_${PACKER_VERSION}_linux_amd64.zip"
+
+          unzip -o "packer_${PACKER_VERSION}_linux_amd64.zip"
+
+          sudo mv packer /usr/local/bin/packer
+
           packer version
 
-      # ------------------------------
-      # STEP 2: Configure AWS credentials
-      # ------------------------------
+
+      # =====================================================
+      # STEP 3: Configure AWS credentials
+      # =====================================================
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -39,53 +60,180 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # ------------------------------
-      # STEP 3: Validate Packer template
-      # ------------------------------
-      - name: Validate Packer template
-        run: |
-          cd packer
-          packer init .
-          packer validate .
 
-      # ------------------------------
-      # STEP 4: Build the Golden AMI
-      # ------------------------------
+      # =====================================================
+      # STEP 4: Initialize Packer plugins
+      # =====================================================
+
+      - name: Initialize Packer
+        working-directory: packer
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          packer init .
+
+
+      # =====================================================
+      # STEP 5: Validate Packer template
+      # =====================================================
+
+      - name: Validate Packer template
+        working-directory: packer
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          packer validate golden-image.pkr.hcl
+
+
+      # =====================================================
+      # STEP 6: Build hardened Golden AMI
+      # =====================================================
+
       - name: Build AMI with Packer
         id: packer_build
+        working-directory: packer
+        shell: bash
         run: |
-          cd packer
-          packer build golden-image.pkr.hcl 2>&1 | tee packer_output.txt
-          
-          # Extract AMI ID from output
-          AMI_ID=$(grep -oP 'ami-[a-z0-9]+' packer_output.txt | tail -1)
-          echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
-          echo "Built AMI: $AMI_ID"
-          
-          echo $AMI_ID > ami_id.txt
+          set -euo pipefail
 
-      # ------------------------------
-      # STEP 5: Save AMI ID as artifact
-      # ------------------------------
-      - name: Save AMI ID artifact
+          echo "Starting Packer build..."
+
+          packer build golden-image.pkr.hcl 2>&1 | tee packer_output.txt
+
+          echo "Packer build completed successfully."
+
+
+      # =====================================================
+      # STEP 7: Extract REAL AMI ID from Packer manifest
+      # =====================================================
+
+      - name: Extract AMI ID
+        id: ami_id
+        working-directory: packer
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f packer-manifest.json ]; then
+            echo "ERROR: packer-manifest.json was not created."
+            exit 1
+          fi
+
+          AMI_ID=$(python3 - <<'PY'
+          import json
+
+          with open("packer-manifest.json", "r") as f:
+              data = json.load(f)
+
+          builds = data.get("builds", [])
+
+          if not builds:
+              raise SystemExit("No builds found in packer-manifest.json")
+
+          artifact_id = builds[-1].get("artifact_id", "")
+
+          if not artifact_id:
+              raise SystemExit("No artifact_id found in Packer manifest")
+
+          ami_id = artifact_id.split(":")[-1]
+
+          if not ami_id.startswith("ami-"):
+              raise SystemExit(
+                  f"Invalid AMI ID extracted: {ami_id}"
+              )
+
+          print(ami_id)
+          PY
+          )
+
+          echo "Built Golden AMI: $AMI_ID"
+
+          echo "$AMI_ID" > ami_id.txt
+
+          echo "ami_id=$AMI_ID" >> "$GITHUB_OUTPUT"
+
+
+      # =====================================================
+      # STEP 8: Upload AMI ID
+      # =====================================================
+
+      - name: Upload AMI ID
         uses: actions/upload-artifact@v4
         with:
-          name: ami-id
+          name: golden-ami-id
           path: packer/ami_id.txt
+          if-no-files-found: error
 
-      # ------------------------------
-      # STEP 6: Upload OpenSCAP reports
-      # ------------------------------
+
+      # =====================================================
+      # STEP 9: Upload Packer manifest
+      # =====================================================
+
+      - name: Upload Packer manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: packer-manifest
+          path: packer/packer-manifest.json
+          if-no-files-found: error
+
+
+      # =====================================================
+      # STEP 10: Upload OpenSCAP reports
+      # =====================================================
+
       - name: Upload OpenSCAP reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: openscap-reports
-          path: packer/*.html
+          path: |
+            packer/compliance_report.html
+            packer/arf.xml
+          if-no-files-found: warn
 
-      # ------------------------------
-      # STEP 7: Cleanup old AMIs (keep only latest 3)
-      # ------------------------------
-      - name: Cleanup old AMIs
-        if: always()
+
+      # =====================================================
+      # STEP 11: Upload Packer logs if build fails
+      # =====================================================
+
+      - name: Upload Packer logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packer-build-log
+          path: packer/packer_output.txt
+          if-no-files-found: warn
+
+
+      # =====================================================
+      # STEP 12: Cleanup old Golden AMIs
+      # Keeps the 3 newest AMIs
+      # =====================================================
+
+      - name: Cleanup old Golden AMIs
+        if: success()
+        shell: bash
         run: |
-          aws ec2 describe-images --owners self --filters "Name=name,Values=golden-image-*" --query 'Images | sort_by(@, &CreationDate) | reverse(@) | [3:].ImageId' --output text | xargs -r -n1 aws ec2 deregister-image --image-id
+          set -euo pipefail
+
+          echo "Finding old Golden AMIs..."
+
+          OLD_AMIS=$(aws ec2 describe-images \
+            --owners self \
+            --filters "Name=name,Values=golden-image-*" \
+            --query 'Images | sort_by(@, &CreationDate) | reverse(@) | [3:].ImageId' \
+            --output text)
+
+          if [ -z "$OLD_AMIS" ] || [ "$OLD_AMIS" = "None" ]; then
+            echo "No old AMIs to delete."
+            exit 0
+          fi
+
+          for AMI_ID in $OLD_AMIS; do
+            echo "Deregistering old AMI: $AMI_ID"
+
+            aws ec2 deregister-image \
+              --image-id "$AMI_ID"
+          done
