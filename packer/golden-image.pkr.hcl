@@ -40,7 +40,7 @@ source "amazon-ebs" "golden-image" {
       virtualization-type = "hvm"
     }
     most_recent = true
-    owners      = ["099720109477"]  # Canonical
+    owners      = ["099720109477"]
   }
 
   ssh_username = "ubuntu"
@@ -71,12 +71,13 @@ build {
   sources = ["source.amazon-ebs.golden-image"]
 
   # ------------------------------
-  # PROVISIONER 1: Install prerequisites (including Ansible)
+  # PROVISIONER 1: Install prerequisites (including Ansible via pip)
   # ------------------------------
   provisioner "shell" {
     inline = [
       "sudo apt update -y",
-      "sudo apt install -y python3 python3-pip python3-apt software-properties-common ansible",
+      "sudo apt install -y python3 python3-pip python3-apt software-properties-common",
+      "sudo pip3 install ansible",
     ]
   }
 
