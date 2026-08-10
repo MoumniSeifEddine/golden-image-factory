@@ -203,7 +203,7 @@ build {
 
 
   # ==========================================================
-  # STEP 5: Find OpenSCAP content
+  # STEP 5: Download SCAP Security Guide
   # ==========================================================
 
   provisioner "shell" {
@@ -216,17 +216,19 @@ build {
 
       "oscap --version",
 
-      "echo 'Searching for Ubuntu 22.04 SCAP Security Guide content...'",
+      "echo 'Downloading SCAP Security Guide...'",
 
-      "SCAP_CONTENT=$(find /usr/share -type f \\( -name 'ssg-ubuntu2204-ds.xml' -o -name 'ssg-ubuntu2204-ds.xml.bz2' \\) | head -n 1)",
+      "cd /tmp",
 
-      "if [ -z \"$SCAP_CONTENT\" ]; then echo 'ERROR: Ubuntu 22.04 SCAP Security Guide content not found'; exit 1; fi",
+      "curl -L -o scap-security-guide.zip https://github.com/ComplianceAsCode/content/releases/download/v0.1.76/scap-security-guide-0.1.76.zip",
+
+      "unzip -o scap-security-guide.zip",
+
+      "SCAP_CONTENT=$(find /tmp -type f -name 'ssg-ubuntu2204-ds.xml' | head -n 1)",
+
+      "if [ -z \"$SCAP_CONTENT\" ]; then echo 'ERROR: Ubuntu 22.04 SCAP content not found'; exit 1; fi",
 
       "echo \"Using SCAP content: $SCAP_CONTENT\"",
-
-      "case \"$SCAP_CONTENT\" in *.bz2) bunzip2 -k \"$SCAP_CONTENT\"; SCAP_CONTENT=$(echo \"$SCAP_CONTENT\" | sed 's/\\.bz2$//');; esac",
-
-      "echo \"Final SCAP content: $SCAP_CONTENT\"",
 
       "sudo oscap info \"$SCAP_CONTENT\""
     ]
@@ -243,9 +245,9 @@ build {
 
       "set -eux",
 
-      "SCAP_CONTENT=$(find /usr/share -type f -name 'ssg-ubuntu2204-ds.xml' | head -n 1)",
+      "SCAP_CONTENT=$(find /tmp -type f -name 'ssg-ubuntu2204-ds.xml' | head -n 1)",
 
-      "if [ -z \"$SCAP_CONTENT\" ]; then echo 'ERROR: Uncompressed Ubuntu 22.04 SCAP content not found'; exit 1; fi",
+      "if [ -z \"$SCAP_CONTENT\" ]; then echo 'ERROR: Ubuntu 22.04 SCAP content not found'; exit 1; fi",
 
       "echo \"Running OpenSCAP scan with: $SCAP_CONTENT\"",
 

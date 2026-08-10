@@ -143,9 +143,9 @@
       ansible.builtin.apt:
         name:
           - libopenscap8
-          - ssg-base
-          - ssg-debderived
           - bzip2
+          - curl
+          - unzip
         state: present
         update_cache: true
 
