@@ -43,22 +43,29 @@
     # =============================================
     # 2. Password Policy (CIS 5.3)
     # =============================================
+    - name: Ensure pwquality.conf exists
+      file:
+        path: /etc/security/pwquality.conf
+        state: touch
+        owner: root
+        group: root
+        mode: 0644
+
     - name: Enforce password minimum length
       lineinfile:
         path: /etc/security/pwquality.conf
         regexp: '^minlen'
         line: 'minlen = 12'
         state: present
-      create: yes
 
-    - name: Enforce password complexity (at least one digit)
+    - name: Enforce password complexity (digit required)
       lineinfile:
         path: /etc/security/pwquality.conf
         regexp: '^dcredit'
         line: 'dcredit = -1'
         state: present
 
-    - name: Enforce password complexity (at least one uppercase)
+    - name: Enforce password complexity (uppercase required)
       lineinfile:
         path: /etc/security/pwquality.conf
         regexp: '^ucredit'
