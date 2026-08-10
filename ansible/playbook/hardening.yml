@@ -108,15 +108,11 @@
       apt:
         name:
           - libopenscap8
-          - openscap-scanner
+          - openscap-utils
+          - scap-security-guide
           - bzip2
         state: present
         update_cache: yes
-
-    - name: Install SCAP Security Guide
-      apt:
-        name: scap-security-guide
-        state: present
 
   handlers:
     - name: restart sshd
