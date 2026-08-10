@@ -1,0 +1,118 @@
+---
+- name: Apply CIS-Inspired Hardening to Ubuntu 22.04
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    # =============================================
+    # 1. SSH Hardening (CIS 5.2)
+    # =============================================
+    - name: Disable root login via SSH
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PermitRootLogin'
+        line: 'PermitRootLogin no'
+        state: present
+      notify: restart sshd
+
+    - name: Disable empty passwords
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PermitEmptyPasswords'
+        line: 'PermitEmptyPasswords no'
+        state: present
+      notify: restart sshd
+
+    - name: Set SSH idle timeout
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^ClientAliveInterval'
+        line: 'ClientAliveInterval 300'
+        state: present
+      notify: restart sshd
+
+    - name: Set SSH max authentication attempts
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^MaxAuthTries'
+        line: 'MaxAuthTries 4'
+        state: present
+      notify: restart sshd
+
+    # =============================================
+    # 2. Password Policy (CIS 5.3)
+    # =============================================
+    - name: Enforce password minimum length
+      lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: '^minlen'
+        line: 'minlen = 12'
+        state: present
+      create: yes
+
+    - name: Enforce password complexity (at least one digit)
+      lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: '^dcredit'
+        line: 'dcredit = -1'
+        state: present
+
+    - name: Enforce password complexity (at least one uppercase)
+      lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: '^ucredit'
+        line: 'ucredit = -1'
+        state: present
+
+    - name: Set password expiration (90 days)
+      lineinfile:
+        path: /etc/login.defs
+        regexp: '^PASS_MAX_DAYS'
+        line: 'PASS_MAX_DAYS 90'
+        state: present
+
+    # =============================================
+    # 3. System Hardening
+    # =============================================
+    - name: Set system umask to 027
+      lineinfile:
+        path: /etc/login.defs
+        regexp: '^UMASK'
+        line: 'UMASK 027'
+        state: present
+
+    - name: Install auditd for system monitoring
+      apt:
+        name: auditd
+        state: present
+        update_cache: yes
+
+    - name: Enable auditd service
+      systemd:
+        name: auditd
+        enabled: yes
+        state: started
+
+    # =============================================
+    # 4. Install OpenSCAP (for compliance scanning later)
+    # =============================================
+    - name: Install OpenSCAP scanner
+      apt:
+        name:
+          - libopenscap8
+          - openscap-scanner
+          - bzip2
+        state: present
+        update_cache: yes
+
+    - name: Install SCAP Security Guide
+      apt:
+        name: scap-security-guide
+        state: present
+
+  handlers:
+    - name: restart sshd
+      service:
+        name: sshd
+        state: restarted
