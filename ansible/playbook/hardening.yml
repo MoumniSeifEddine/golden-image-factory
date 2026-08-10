@@ -104,12 +104,13 @@
     # =============================================
     # 4. Install OpenSCAP (for compliance scanning later)
     # =============================================
-    - name: Install OpenSCAP scanner
+    - name: Install OpenSCAP scanner and SCAP Security Guide
       apt:
         name:
           - libopenscap8
           - openscap-utils
-          - scap-security-guide
+          - ssg-base
+          - ssg-debderived
           - bzip2
         state: present
         update_cache: yes
