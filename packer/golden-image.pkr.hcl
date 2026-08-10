@@ -224,7 +224,7 @@ build {
 
       "echo \"Using SCAP content: $SCAP_CONTENT\"",
 
-      "if [[ \"$SCAP_CONTENT\" == *.bz2 ]]; then bunzip2 -k \"$SCAP_CONTENT\"; SCAP_CONTENT=\"${SCAP_CONTENT%.bz2}\"; fi",
+      "case \"$SCAP_CONTENT\" in *.bz2) bunzip2 -k \"$SCAP_CONTENT\"; SCAP_CONTENT=$(echo \"$SCAP_CONTENT\" | sed 's/\\.bz2$//');; esac",
 
       "echo \"Final SCAP content: $SCAP_CONTENT\"",
 
