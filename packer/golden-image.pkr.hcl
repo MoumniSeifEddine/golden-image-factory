@@ -159,24 +159,20 @@ build {
 
 
   # ==========================================================
-  # STEP 3: Install Trivy
+  # STEP 3: Install Trivy (official script)
   # ==========================================================
 
   provisioner "shell" {
-
     inline = [
-
       "set -eux",
 
       "sudo apt-get update",
 
-      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y wget ca-certificates",
+      "sudo apt-get install -y curl",
 
-      "wget -q https://github.com/aquasecurity/trivy/releases/download/v0.50.4/trivy_0.50.4_Linux-64bit.deb",
+      "echo 'Installing Trivy via official script...'",
 
-      "sudo dpkg -i trivy_0.50.4_Linux-64bit.deb",
-
-      "rm -f trivy_0.50.4_Linux-64bit.deb",
+      "curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin v0.52.0",
 
       "trivy --version"
     ]
@@ -188,9 +184,7 @@ build {
   # ==========================================================
 
   provisioner "shell" {
-
     inline = [
-
       "set -eux",
 
       "echo 'Running Trivy filesystem vulnerability scan...'",
