@@ -126,14 +126,16 @@ build {
 
 
   # ==========================================================
-  # STEP 1: Install prerequisites
+  # STEP 1: Clean APT cache and install prerequisites
   # ==========================================================
 
   provisioner "shell" {
-
     inline = [
-
       "set -eux",
+
+      # Clean corrupted APT cache (fixes "can not open" error)
+      "sudo rm -rf /var/lib/apt/lists/*",
+      "sudo apt-get clean",
 
       "sudo apt-get update",
 
