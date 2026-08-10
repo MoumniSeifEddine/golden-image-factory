@@ -43,12 +43,9 @@ source "amazon-ebs" "golden-image" {
     owners      = ["099720109477"]  # Canonical
   }
 
-  # SSH configuration – Packer will create a temporary key pair
   ssh_username = "ubuntu"
   ssh_timeout  = "10m"
-  # No need to specify key pair – Packer generates one automatically
 
-  # Volume size under 35GB (Lab 4 allows up to 35GB)
   launch_block_device_mappings {
     device_name = "/dev/sda1"
     volume_size = 8
@@ -74,12 +71,12 @@ build {
   sources = ["source.amazon-ebs.golden-image"]
 
   # ------------------------------
-  # PROVISIONER 1: Install prerequisites
+  # PROVISIONER 1: Install prerequisites (including Ansible)
   # ------------------------------
   provisioner "shell" {
     inline = [
       "sudo apt update -y",
-      "sudo apt install -y python3 python3-pip python3-apt software-properties-common",
+      "sudo apt install -y python3 python3-pip python3-apt software-properties-common ansible",
     ]
   }
 
