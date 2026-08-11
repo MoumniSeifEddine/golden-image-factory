@@ -247,8 +247,77 @@
         minute: 0
         user: root
 
+
     # ==========================================================
-    # STEP 7: SSH HARDENING (Advanced)
+    # STEP 7: FIX HIGH SEVERITY – GRUB UEFI Password
+    # ==========================================================
+
+    - name: Install GRUB tools
+      ansible.builtin.apt:
+        name:
+          - grub-common
+          - grub-efi-amd64-bin
+        state: present
+
+    - name: Generate GRUB password hash
+      ansible.builtin.shell:
+        cmd: |
+          echo -e "cis_password\ncis_password" | grub-mkpasswd-pbkdf2 | grep -o 'grub.pbkdf2.*'
+        executable: /bin/bash
+      register: grub_hash
+      changed_when: false
+
+    - name: Set GRUB superuser and password in 40_custom
+      ansible.builtin.lineinfile:
+        path: /etc/grub.d/40_custom
+        line: "{{ item }}"
+        state: present
+        create: true
+        mode: '0755'
+      loop:
+        - "set superusers=\"root\""
+        - "password_pbkdf2 root {{ grub_hash.stdout }}"
+
+    - name: Update GRUB configuration
+      ansible.builtin.command:
+        cmd: update-grub
+      changed_when: true
+
+    # ==========================================================
+    # STEP 8: FIX HIGH SEVERITY – systemd_timesyncd (NTP)
+    # ==========================================================
+
+    - name: Install systemd-timesyncd
+      ansible.builtin.apt:
+        name: systemd-timesyncd
+        state: present
+        update_cache: true
+
+    - name: Ensure systemd-timesyncd is enabled and running
+      ansible.builtin.systemd:
+        name: systemd-timesyncd
+        enabled: true
+        state: started
+
+    - name: Configure NTP servers
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/timesyncd.conf
+        regexp: "^{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+      loop:
+        - { regexp: '^#?NTP=', line: 'NTP=0.pool.ntp.org 1.pool.ntp.org 2.pool.ntp.org' }
+        - { regexp: '^#?FallbackNTP=', line: 'FallbackNTP=ntp.ubuntu.com' }
+
+    - name: Restart systemd-timesyncd to apply changes
+      ansible.builtin.systemd:
+        name: systemd-timesyncd
+        state: restarted
+
+
+        
+    # ==========================================================
+    # STEP 9: SSH HARDENING (Advanced)
     # ==========================================================
 
     - name: Configure SSH strong ciphers
@@ -356,7 +425,7 @@
       notify: Restart SSH
 
     # ==========================================================
-    # STEP 8: MOUNT OPTIONS FOR /dev/shm
+    # STEP 10: MOUNT OPTIONS FOR /dev/shm
     # ==========================================================
 
     - name: Ensure /dev/shm is mounted with noexec,nosuid,nodev
@@ -368,7 +437,7 @@
         state: mounted
 
     # ==========================================================
-    # STEP 9: DISABLE UNNECESSARY SERVICES
+    # STEP 11: DISABLE UNNECESSARY SERVICES
     # ==========================================================
 
     - name: Remove telnet client
@@ -388,7 +457,7 @@
         state: stopped
 
     # ==========================================================
-    # STEP 10: COMPLETE SYSCTL HARDENING
+    # STEP 12: COMPLETE SYSCTL HARDENING
     # ==========================================================
 
     - name: Apply base sysctl hardening (already applied, but ensure)
