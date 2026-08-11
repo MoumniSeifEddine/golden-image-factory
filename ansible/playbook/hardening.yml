@@ -4,10 +4,17 @@
   become: true
   gather_facts: true
 
+  vars:
+    # ----- Variables used by various tasks -----
+    ssh_allowed_group: "sshusers"
+    pam_wheel_group: "suwheel"
+    login_banner: "Authorized users only. All activity is monitored and logged."
+    rsyslog_remote_loghost: "logs.example.com"   # Change to your actual log server
+
   tasks:
 
     # ==========================================================
-    # 1. BASE SECURITY PACKAGES
+    # STEP 1: BASE SECURITY PACKAGES
     # ==========================================================
 
     - name: Install security and auditing packages
@@ -27,9 +34,8 @@
         state: present
         update_cache: true
 
-
     # ==========================================================
-    # 2. SSH HARDENING
+    # STEP 2: SSH HARDENING
     # ==========================================================
 
     - name: Create dedicated SSH access group
@@ -37,7 +43,7 @@
         name: "{{ ssh_allowed_group }}"
         state: present
 
-    - name: Add Ubuntu provisioning user to SSH access group
+    - name: Add ubuntu user to SSH access group
       ansible.builtin.user:
         name: ubuntu
         groups: "{{ ssh_allowed_group }}"
@@ -52,7 +58,7 @@
         validate: '/usr/sbin/sshd -t -f %s'
       notify: Restart SSH
 
-    - name: Disable SSH password authentication
+    - name: Disable SSH password authentication (force key-based)
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
         regexp: '^#?\s*PasswordAuthentication'
@@ -212,9 +218,8 @@
         group: root
         mode: '0600'
 
-
     # ==========================================================
-    # 3. LOGIN BANNERS
+    # STEP 3: LOGIN BANNERS
     # ==========================================================
 
     - name: Configure local login banner
@@ -233,9 +238,8 @@
         group: root
         mode: '0644'
 
-
     # ==========================================================
-    # 4. PASSWORD POLICY
+    # STEP 4: PASSWORD POLICY
     # ==========================================================
 
     - name: Configure pwquality minimum length
@@ -308,7 +312,7 @@
         line: 'INACTIVE=30'
         state: present
 
-    # PAM faillock configuration.
+    # PAM faillock configuration
     - name: Configure faillock deny threshold
       ansible.builtin.lineinfile:
         path: /etc/security/faillock.conf
@@ -358,16 +362,15 @@
         insertbefore: '^account.*pam_unix\.so'
         state: present
 
-    # pam_tally2 is obsolete on this Ubuntu release.
+    # Remove obsolete pam_tally2 references (if any)
     - name: Remove obsolete pam_tally2 configuration
       ansible.builtin.lineinfile:
         path: /etc/pam.d/common-auth
         regexp: 'pam_tally2\.so'
         state: absent
 
-
     # ==========================================================
-    # 5. SUDO HARDENING
+    # STEP 5: SUDO HARDENING
     # ==========================================================
 
     - name: Configure sudo logfile
@@ -405,9 +408,8 @@
         group: root
         mode: '0600'
 
-
     # ==========================================================
-    # 6. SU / PAM WHEEL
+    # STEP 6: SU / PAM WHEEL (restrict su to empty group)
     # ==========================================================
 
     - name: Create empty sugroup for pam_wheel
@@ -427,9 +429,8 @@
         line: 'auth required pam_wheel.so use_uid group={{ pam_wheel_group }}'
         state: present
 
-
     # ==========================================================
-    # 7. ROOT ACCOUNT / SINGLE USER MODE
+    # STEP 7: ROOT ACCOUNT / SINGLE USER MODE
     # ==========================================================
 
     - name: Generate a random root password hash
@@ -443,16 +444,15 @@
       changed_when: false
       no_log: true
 
-    - name: Configure a non-blank random root password
+    - name: Configure a non‑blank random root password
       ansible.builtin.user:
         name: root
         password: "{{ root_password_hash.stdout }}"
         password_lock: false
       no_log: true
 
-
     # ==========================================================
-    # 8. UMASK / SESSION TIMEOUT
+    # STEP 8: UMASK / SESSION TIMEOUT
     # ==========================================================
 
     - name: Configure login.defs UMASK
@@ -485,9 +485,8 @@
         group: root
         mode: '0644'
 
-
     # ==========================================================
-    # 9. APPARMOR / GRUB
+    # STEP 9: APPARMOR / GRUB
     # ==========================================================
 
     - name: Enable AppArmor service
@@ -500,7 +499,6 @@
       ansible.builtin.shell:
         cmd: |
           set -e
-
           if grep -q '^GRUB_CMDLINE_LINUX=' /etc/default/grub; then
             sed -i -E 's/[[:space:]]*apparmor=[^[:space:]]+//g; s/[[:space:]]*security=[^[:space:]]+//g' /etc/default/grub
             sed -i -E 's|^(GRUB_CMDLINE_LINUX="[^"]*)"|\1 apparmor=1 security=apparmor"|' /etc/default/grub
@@ -509,9 +507,8 @@
           fi
       notify: Update GRUB
 
-
     # ==========================================================
-    # 10. AUDITD
+    # STEP 10: AUDITD
     # ==========================================================
 
     - name: Enable and start auditd
@@ -534,10 +531,15 @@
           find /etc/audit/rules.d -maxdepth 1 -type f -name '*.rules' -exec chmod 0600 {} +
       changed_when: false
 
+    # ==========================================================
+    # STEP 11: AIDE (File Integrity Monitoring)
+    # ==========================================================
 
-    # ==========================================================
-    # 11. AIDE
-    # ==========================================================
+    - name: Install AIDE (if not already installed)
+      ansible.builtin.apt:
+        name: aide
+        state: present
+        update_cache: true
 
     - name: Configure AIDE database path
       ansible.builtin.lineinfile:
@@ -575,9 +577,46 @@
         group: root
         mode: '0700'
 
+    - name: Remove previous AIDE database files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/aide/aide.db
+        - /var/lib/aide/aide.db.new
+
+    - name: Build AIDE database
+      ansible.builtin.command:
+        cmd: /usr/sbin/aideinit -y -f
+      register: aide_init
+      changed_when: true
+
+    - name: Install generated AIDE database
+      ansible.builtin.command:
+        cmd: mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+      changed_when: true
+
+    - name: Verify AIDE database exists
+      ansible.builtin.stat:
+        path: /var/lib/aide/aide.db
+      register: aide_database
+
+    - name: Fail if AIDE database was not created
+      ansible.builtin.assert:
+        that:
+          - aide_database.stat.exists
+        fail_msg: "AIDE database was not created successfully."
+
+    - name: Install daily AIDE check cron job
+      ansible.builtin.cron:
+        name: "Run AIDE daily check"
+        job: "/usr/bin/aide --check > /var/log/aide/aide_check.log 2>&1"
+        hour: 2
+        minute: 0
+        user: root
 
     # ==========================================================
-    # 12. JOURNALD / CENTRAL LOGGING
+    # STEP 12: JOURNALD / CENTRAL LOGGING
     # ==========================================================
 
     - name: Configure persistent journald storage
@@ -620,9 +659,8 @@
         enabled: true
         state: started
 
-
     # ==========================================================
-    # 13. /tmp HARDENING
+    # STEP 13: /tmp HARDENING
     # ==========================================================
 
     - name: Configure /tmp as a separate tmpfs filesystem
@@ -642,9 +680,8 @@
           fi
       changed_when: false
 
-
     # ==========================================================
-    # 14. SYSCTL NETWORK HARDENING
+    # STEP 14: SYSCTL NETWORK HARDENING
     # ==========================================================
 
     - name: Configure IPv4 and IPv6 kernel hardening
@@ -657,55 +694,42 @@
       loop:
         - { name: 'net.ipv4.conf.all.rp_filter', value: '1' }
         - { name: 'net.ipv4.conf.default.rp_filter', value: '1' }
-
         - { name: 'net.ipv4.conf.all.accept_source_route', value: '0' }
         - { name: 'net.ipv4.conf.default.accept_source_route', value: '0' }
-
         - { name: 'net.ipv4.conf.all.accept_redirects', value: '0' }
         - { name: 'net.ipv4.conf.default.accept_redirects', value: '0' }
-
         - { name: 'net.ipv4.conf.all.secure_redirects', value: '0' }
         - { name: 'net.ipv4.conf.default.secure_redirects', value: '0' }
-
         - { name: 'net.ipv4.conf.all.send_redirects', value: '0' }
         - { name: 'net.ipv4.conf.default.send_redirects', value: '0' }
-
         - { name: 'net.ipv4.ip_forward', value: '0' }
-
         - { name: 'net.ipv4.conf.all.log_martians', value: '1' }
         - { name: 'net.ipv4.conf.default.log_martians', value: '1' }
-
         - { name: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }
         - { name: 'net.ipv4.icmp_ignore_bogus_error_responses', value: '1' }
         - { name: 'net.ipv4.tcp_syncookies', value: '1' }
-
         - { name: 'net.ipv6.conf.all.accept_ra', value: '0' }
         - { name: 'net.ipv6.conf.default.accept_ra', value: '0' }
-
         - { name: 'net.ipv6.conf.all.accept_redirects', value: '0' }
         - { name: 'net.ipv6.conf.default.accept_redirects', value: '0' }
-
         - { name: 'net.ipv6.conf.all.accept_source_route', value: '0' }
         - { name: 'net.ipv6.conf.default.accept_source_route', value: '0' }
-
         - { name: 'net.ipv6.conf.all.forwarding', value: '0' }
-
         - { name: 'kernel.randomize_va_space', value: '2' }
         - { name: 'fs.suid_dumpable', value: '0' }
 
-
     # ==========================================================
-    # 15. CORE DUMPS
+    # STEP 15: CORE DUMPS
     # ==========================================================
 
-    - name: Disable user core dumps
+    - name: Disable user core dumps via limits.conf
       ansible.builtin.lineinfile:
         path: /etc/security/limits.conf
         regexp: '^\*\s+hard\s+core'
         line: '*        hard       core      0'
         state: present
 
-    - name: Configure systemd core dump policy
+    - name: Ensure systemd coredump config directory exists
       ansible.builtin.file:
         path: /etc/systemd/coredump.conf.d
         state: directory
@@ -724,9 +748,8 @@
         group: root
         mode: '0644'
 
-
     # ==========================================================
-    # 16. DISABLE UNNECESSARY FILESYSTEM MODULES
+    # STEP 16: DISABLE UNNECESSARY FILESYSTEM MODULES
     # ==========================================================
 
     - name: Disable cramfs kernel module
@@ -749,9 +772,8 @@
         group: root
         mode: '0644'
 
-
     # ==========================================================
-    # 17. FIREWALL
+    # STEP 17: FIREWALL (nftables)
     # ==========================================================
 
     - name: Remove UFW
@@ -770,20 +792,15 @@
           table inet filter {
               chain input {
                   type filter hook input priority filter; policy drop;
-
                   iifname "lo" accept
                   ct state established,related accept
-
                   ip protocol icmp accept
                   ip6 nexthdr icmpv6 accept
-
                   tcp dport 22 accept
               }
-
               chain forward {
                   type filter hook forward priority filter; policy drop;
               }
-
               chain output {
                   type filter hook output priority filter; policy accept;
               }
@@ -814,9 +831,8 @@
         enabled: true
         state: started
 
-
     # ==========================================================
-    # 18. POSTFIX / MTA
+    # STEP 18: POSTFIX / MTA
     # ==========================================================
 
     - name: Remove Postfix when present
@@ -825,9 +841,8 @@
         state: absent
         purge: true
 
-
     # ==========================================================
-    # 19. LOG FILE PERMISSIONS
+    # STEP 19: LOG FILE PERMISSIONS
     # ==========================================================
 
     - name: Remove unsafe permissions from /var/log files
@@ -842,9 +857,8 @@
             -exec chmod u-s,g-xwrs,o-xwrt {} +
       changed_when: false
 
-
     # ==========================================================
-    # 20. CRON PERMISSIONS
+    # STEP 20: CRON PERMISSIONS
     # ==========================================================
 
     - name: Secure cron directories
@@ -869,9 +883,8 @@
         mode: '0600'
         state: file
 
-
     # ==========================================================
-    # 21. NTP
+    # STEP 21: NTP (systemd-timesyncd)
     # ==========================================================
 
     - name: Install systemd-timesyncd
@@ -894,12 +907,11 @@
         enabled: true
         state: started
 
-
     # ==========================================================
-    # 22. FINAL VALIDATION / PERMISSIONS
+    # STEP 22: FINAL VALIDATION
     # ==========================================================
 
-    - name: Secure audit rules files
+    - name: Secure audit rules files (final check)
       ansible.builtin.shell:
         cmd: "find /etc/audit/rules.d -maxdepth 1 -type f -name '*.rules' -exec chmod 0600 {} +"
       changed_when: false
@@ -914,56 +926,11 @@
         cmd: /usr/sbin/visudo -cf /etc/sudoers
       changed_when: false
 
-
-    # ==========================================================
-    # 23. BUILD AIDE DATABASE LAST
-    # ==========================================================
-
-    - name: Remove previous AIDE database files
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /var/lib/aide/aide.db
-        - /var/lib/aide/aide.db.new
-
-    - name: Build AIDE database
-      ansible.builtin.command:
-        cmd: /usr/sbin/aideinit -y -f
-      register: aide_init
-      changed_when: true
-
-    - name: Install generated AIDE database
-      ansible.builtin.command:
-        cmd: mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
-      changed_when: true
-
-    - name: Verify AIDE database exists
-      ansible.builtin.stat:
-        path: /var/lib/aide/aide.db
-      register: aide_database
-
-    - name: Fail if AIDE database was not created
-      ansible.builtin.assert:
-        that:
-          - aide_database.stat.exists
-        fail_msg: "AIDE database was not created successfully."
-
-    - name: Install daily AIDE check cron job
-      ansible.builtin.cron:
-        name: "Run AIDE daily check"
-        job: "/usr/bin/aide --check > /var/log/aide/aide_check.log 2>&1"
-        hour: 2
-        minute: 0
-        user: root
-
-
   # ============================================================
   # HANDLERS
   # ============================================================
 
   handlers:
-
     - name: Restart SSH
       ansible.builtin.service:
         name: ssh
