@@ -134,7 +134,7 @@ build {
       "set -eux",
 
       # Clean corrupted APT cache (fixes "can not open" error)
-      "sudo rm -rf /var/lib/apt/lists/*",
+      "sudo rm -rf /var/lib/apt/lists/\*",
       "sudo apt-get clean",
 
       "sudo apt-get update",
