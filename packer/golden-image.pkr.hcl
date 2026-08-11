@@ -134,7 +134,7 @@ build {
       "set -eux",
 
       # Clean corrupted APT cache (fixes "can not open" error)
-      "sudo rm -rf /var/lib/apt/lists/\*",
+      "sudo rm -rf /var/lib/apt/lists/*",
       "sudo apt-get clean",
 
       "sudo apt-get update",
@@ -161,7 +161,7 @@ build {
 
 
   # ==========================================================
-  # STEP 3: Install Trivy (official script)
+  # STEP 3: Install Trivy via official APT repository
   # ==========================================================
 
   provisioner "shell" {
@@ -170,11 +170,15 @@ build {
 
       "sudo apt-get update",
 
-      "sudo apt-get install -y curl",
+      "sudo apt-get install -y wget gnupg",
 
-      "echo 'Installing Trivy via official script...'",
+      "wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -",
 
-      "curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin v0.52.0",
+      "echo 'deb https://aquasecurity.github.io/trivy-repo/deb generic main' | sudo tee /etc/apt/sources.list.d/trivy.list",
+
+      "sudo apt-get update",
+
+      "sudo apt-get install -y trivy",
 
       "trivy --version"
     ]
@@ -196,7 +200,6 @@ build {
       "echo 'Trivy scan passed.'"
     ]
   }
-
 
   # ==========================================================
   # STEP 5: Download SCAP Security Guide
