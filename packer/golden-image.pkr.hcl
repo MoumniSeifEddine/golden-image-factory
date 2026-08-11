@@ -248,7 +248,7 @@ build {
 
       "if [ -z \"$SCAP_CONTENT\" ]; then echo 'ERROR: Ubuntu 22.04 SCAP content not found'; exit 1; fi",
 
-      "echo \"Running OpenSCAP scan with: $SCAP_CONTENT\"",
+      "echo \"Running OpenSCAP scan with: $SCAP_CONTENT\" || true",
 
       "sudo oscap xccdf eval --profile xccdf_org.ssgproject.content_profile_cis_level1_server --results-arf /tmp/arf.xml --report /tmp/compliance_report.html \"$SCAP_CONTENT\"",
 
