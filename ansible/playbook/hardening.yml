@@ -6,9 +6,8 @@
 
   tasks:
 
-
     # ==========================================================
-    # STEP 1: SSH HARDENING
+    # STEP 1: SSH HARDENING (Basic)
     # ==========================================================
 
     - name: Disable root login via SSH
@@ -20,7 +19,6 @@
         validate: '/usr/sbin/sshd -t -f %s'
       notify: Restart SSH
 
-
     - name: Disable empty passwords
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
@@ -29,7 +27,6 @@
         state: present
         validate: '/usr/sbin/sshd -t -f %s'
       notify: Restart SSH
-
 
     - name: Set SSH idle timeout
       ansible.builtin.lineinfile:
@@ -40,7 +37,6 @@
         validate: '/usr/sbin/sshd -t -f %s'
       notify: Restart SSH
 
-
     - name: Set SSH max authentication attempts
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
@@ -50,18 +46,15 @@
         validate: '/usr/sbin/sshd -t -f %s'
       notify: Restart SSH
 
-
     # ==========================================================
     # STEP 2: PASSWORD POLICY
     # ==========================================================
 
     - name: Install password quality package
       ansible.builtin.apt:
-        name:
-          - libpam-pwquality
+        name: libpam-pwquality
         state: present
         update_cache: true
-
 
     - name: Ensure pwquality.conf exists
       ansible.builtin.file:
@@ -71,14 +64,12 @@
         group: root
         mode: '0644'
 
-
     - name: Enforce password minimum length
       ansible.builtin.lineinfile:
         path: /etc/security/pwquality.conf
         regexp: '^\s*minlen\s*='
-        line: 'minlen = 12'
+        line: 'minlen = 14'
         state: present
-
 
     - name: Enforce password complexity - digit required
       ansible.builtin.lineinfile:
@@ -87,7 +78,6 @@
         line: 'dcredit = -1'
         state: present
 
-
     - name: Enforce password complexity - uppercase required
       ansible.builtin.lineinfile:
         path: /etc/security/pwquality.conf
@@ -95,6 +85,33 @@
         line: 'ucredit = -1'
         state: present
 
+    - name: Enforce password complexity - special char required
+      ansible.builtin.lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: '^\s*ocredit\s*='
+        line: 'ocredit = -1'
+        state: present
+
+    - name: Enforce password complexity - lowercase required
+      ansible.builtin.lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: '^\s*lcredit\s*='
+        line: 'lcredit = -1'
+        state: present
+
+    - name: Enforce password complexity - minimum character classes
+      ansible.builtin.lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: '^\s*minclass\s*='
+        line: 'minclass = 4'
+        state: present
+
+    - name: Set password hashing algorithm to SHA512
+      ansible.builtin.lineinfile:
+        path: /etc/login.defs
+        regexp: '^\s*ENCRYPT_METHOD'
+        line: 'ENCRYPT_METHOD SHA512'
+        state: present
 
     - name: Set password maximum age
       ansible.builtin.lineinfile:
@@ -103,6 +120,35 @@
         line: 'PASS_MAX_DAYS 90'
         state: present
 
+    - name: Set password minimum age
+      ansible.builtin.lineinfile:
+        path: /etc/login.defs
+        regexp: '^\s*PASS_MIN_DAYS'
+        line: 'PASS_MIN_DAYS 1'
+        state: present
+
+    - name: Set password minimum length in login.defs
+      ansible.builtin.lineinfile:
+        path: /etc/login.defs
+        regexp: '^\s*PASS_MIN_LEN'
+        line: 'PASS_MIN_LEN 14'
+        state: present
+
+    - name: Configure PAM lockout policy (tally2)
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/common-auth
+        regexp: '^\s*auth\s+required\s+pam_tally2.so'
+        line: 'auth required pam_tally2.so deny=5 unlock_time=900 onerr=fail audit'
+        state: present
+        backup: true
+
+    - name: Configure PAM password reuse policy (pwhistory)
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/common-password
+        regexp: '^\s*password\s+required\s+pam_pwhistory.so'
+        line: 'password required pam_pwhistory.so use_authtok remember=5'
+        state: present
+        backup: true
 
     # ==========================================================
     # STEP 3: SYSTEM HARDENING
@@ -115,18 +161,15 @@
         line: 'UMASK 027'
         state: present
 
-
     # ==========================================================
     # STEP 4: AUDITING
     # ==========================================================
 
     - name: Install auditd
       ansible.builtin.apt:
-        name:
-          - auditd
+        name: auditd
         state: present
         update_cache: true
-
 
     - name: Enable and start auditd
       ansible.builtin.systemd:
@@ -134,6 +177,13 @@
         enabled: true
         state: started
 
+    - name: Ensure audit rules directory has correct permissions
+      ansible.builtin.file:
+        path: /etc/audit/rules.d/
+        state: directory
+        owner: root
+        group: root
+        mode: '0750'
 
     # ==========================================================
     # STEP 5: OPENSCAP AND SCAP SECURITY GUIDE
@@ -149,20 +199,18 @@
         state: present
         update_cache: true
 
-
     - name: Verify OpenSCAP command is available
       ansible.builtin.command:
         cmd: oscap --version
       register: oscap_version
       changed_when: false
 
-
     - name: Display OpenSCAP version
       ansible.builtin.debug:
         var: oscap_version.stdout
 
     # ==========================================================
-    # STEP 6: Install and configure AIDE
+    # STEP 6: AIDE (File Integrity Monitoring)
     # ==========================================================
 
     - name: Install AIDE
@@ -184,24 +232,166 @@
       when: aide_init.changed
       changed_when: true
 
+    - name: Configure AIDE to verify audit tools
+      ansible.builtin.command:
+        cmd: aide --check
+      register: aide_check
+      changed_when: false
+      failed_when: false
+
+    - name: Add AIDE cron job for daily execution
+      ansible.builtin.cron:
+        name: "Run AIDE daily check"
+        job: "/usr/bin/aide --check > /var/log/aide/aide_check.log 2>&1"
+        hour: 2
+        minute: 0
+        user: root
+
     # ==========================================================
-    # STEP 7: Harden auditd rules directory permissions
+    # STEP 7: SSH HARDENING (Advanced)
     # ==========================================================
 
-    - name: Ensure audit rules directory has correct permissions
-      ansible.builtin.file:
-        path: /etc/audit/rules.d/
-        state: directory
-        owner: root
-        group: root
-        mode: '0750'
+    - name: Configure SSH strong ciphers
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^\s*Ciphers'
+        line: 'Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr'
+        state: present
+      notify: Restart SSH
 
+    - name: Configure SSH strong MACs
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^\s*MACs'
+        line: 'MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com'
+        state: present
+      notify: Restart SSH
+
+    - name: Configure SSH strong key exchange algorithms
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^\s*KexAlgorithms'
+        line: 'KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512'
+        state: present
+      notify: Restart SSH
+
+    - name: Set SSH LoginGraceTime
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^\s*LoginGraceTime'
+        line: 'LoginGraceTime 60'
+        state: present
+      notify: Restart SSH
+
+    - name: Set SSH LogLevel to INFO
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^\s*LogLevel'
+        line: 'LogLevel INFO'
+        state: present
+      notify: Restart SSH
+
+    - name: Set SSH MaxSessions
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^\s*MaxSessions'
+        line: 'MaxSessions 4'
+        state: present
+      notify: Restart SSH
+
+    - name: Set SSH MaxStartups
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^\s*MaxStartups'
+        line: 'MaxStartups 10:30:60'
+        state: present
+      notify: Restart SSH
+
+    - name: Set SSH ClientAliveCountMax
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^\s*ClientAliveCountMax'
+        line: 'ClientAliveCountMax 3'
+        state: present
+      notify: Restart SSH
+
+    - name: Set SSH ClientAliveInterval (redundant, but keep)
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^\s*ClientAliveInterval'
+        line: 'ClientAliveInterval 300'
+        state: present
+      notify: Restart SSH
+
+    - name: Disable SSH HostBasedAuthentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^\s*HostBasedAuthentication'
+        line: 'HostBasedAuthentication no'
+        state: present
+      notify: Restart SSH
+
+    - name: Disable SSH .rhosts support
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^\s*IgnoreRhosts'
+        line: 'IgnoreRhosts yes'
+        state: present
+      notify: Restart SSH
+
+    - name: Disable SSH environment options
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^\s*PermitUserEnvironment'
+        line: 'PermitUserEnvironment no'
+        state: present
+      notify: Restart SSH
+
+    - name: Enable SSH warning banner
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^\s*Banner'
+        line: 'Banner /etc/issue.net'
+        state: present
+      notify: Restart SSH
 
     # ==========================================================
-    # STEP 8: Apply CIS kernel parameters (sysctl)
+    # STEP 8: MOUNT OPTIONS FOR /dev/shm
     # ==========================================================
 
-    - name: Apply sysctl hardening parameters
+    - name: Ensure /dev/shm is mounted with noexec,nosuid,nodev
+      ansible.builtin.mount:
+        path: /dev/shm
+        src: tmpfs
+        fstype: tmpfs
+        opts: defaults,noexec,nosuid,nodev
+        state: mounted
+
+    # ==========================================================
+    # STEP 9: DISABLE UNNECESSARY SERVICES
+    # ==========================================================
+
+    - name: Remove telnet client
+      ansible.builtin.apt:
+        name: telnet
+        state: absent
+
+    - name: Remove rsync package
+      ansible.builtin.apt:
+        name: rsync
+        state: absent
+
+    - name: Disable Apport service
+      ansible.builtin.systemd:
+        name: apport.service
+        enabled: false
+        state: stopped
+
+    # ==========================================================
+    # STEP 10: COMPLETE SYSCTL HARDENING
+    # ==========================================================
+
+    - name: Apply base sysctl hardening (already applied, but ensure)
       ansible.builtin.sysctl:
         name: "{{ item.name }}"
         value: "{{ item.value }}"
@@ -216,12 +406,30 @@
         - { name: 'net.ipv4.conf.all.secure_redirects', value: '0' }
         - { name: 'net.ipv4.conf.default.secure_redirects', value: '0' }
         - { name: 'net.ipv4.ip_forward', value: '0' }
+
+    - name: Apply additional sysctl parameters
+      ansible.builtin.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: true
+        sysctl_file: /etc/sysctl.d/99-cis-hardening.conf
+      loop:
+        - { name: 'net.ipv4.conf.all.log_martians', value: '1' }
+        - { name: 'net.ipv4.conf.default.log_martians', value: '1' }
+        - { name: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }
+        - { name: 'net.ipv4.icmp_ignore_bogus_error_responses', value: '1' }
+        - { name: 'net.ipv4.tcp_syncookies', value: '1' }
+        - { name: 'net.ipv4.conf.all.send_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.send_redirects', value: '0' }
+        - { name: 'kernel.randomize_va_space', value: '2' }
+        - { name: 'fs.suid_dumpable', value: '0' }
+
   # ============================================================
   # HANDLERS
   # ============================================================
 
   handlers:
-
     - name: Restart SSH
       ansible.builtin.service:
         name: ssh
