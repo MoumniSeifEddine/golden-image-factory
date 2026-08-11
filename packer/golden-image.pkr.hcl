@@ -246,7 +246,7 @@ build {
 
       "SCAP_CONTENT=$(find /tmp -type f -name 'ssg-ubuntu2204-ds.xml' | head -n 1)",
 
-      "if [ -z \"$SCAP_CONTENT\" ]; then echo 'ERROR: Ubuntu 22.04 SCAP content not found'; exit 1; fi",
+      "if [ -z \"$SCAP_CONTENT\" ]; then echo 'ERROR: Ubuntu 22.04 SCAP content not found'; exit 2; fi",
 
       "echo \"Running OpenSCAP scan with: $SCAP_CONTENT\" || true",
 
