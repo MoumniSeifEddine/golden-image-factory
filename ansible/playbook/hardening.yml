@@ -161,7 +161,61 @@
       ansible.builtin.debug:
         var: oscap_version.stdout
 
+    # ==========================================================
+    # STEP 6: Install and configure AIDE
+    # ==========================================================
 
+    - name: Install AIDE
+      ansible.builtin.apt:
+        name: aide
+        state: present
+        update_cache: true
+
+    - name: Initialize AIDE database
+      ansible.builtin.command:
+        cmd: aideinit -y -f
+      register: aide_init
+      changed_when: "'AIDE, version' in aide_init.stdout"
+      failed_when: false
+
+    - name: Move AIDE database to standard location
+      ansible.builtin.command:
+        cmd: mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+      when: aide_init.changed
+      changed_when: true
+
+    # ==========================================================
+    # STEP 7: Harden auditd rules directory permissions
+    # ==========================================================
+
+    - name: Ensure audit rules directory has correct permissions
+      ansible.builtin.file:
+        path: /etc/audit/rules.d/
+        state: directory
+        owner: root
+        group: root
+        mode: '0750'
+
+
+    # ==========================================================
+    # STEP 8: Apply CIS kernel parameters (sysctl)
+    # ==========================================================
+
+    - name: Apply sysctl hardening parameters
+      ansible.builtin.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: true
+        sysctl_file: /etc/sysctl.d/99-cis-hardening.conf
+      loop:
+        - { name: 'net.ipv4.conf.all.rp_filter', value: '1' }
+        - { name: 'net.ipv4.conf.default.rp_filter', value: '1' }
+        - { name: 'net.ipv4.conf.all.accept_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.accept_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.all.secure_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.secure_redirects', value: '0' }
+        - { name: 'net.ipv4.ip_forward', value: '0' }
   # ============================================================
   # HANDLERS
   # ============================================================
