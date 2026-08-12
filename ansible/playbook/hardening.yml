@@ -670,16 +670,6 @@
         line: 'tmpfs /tmp tmpfs rw,nosuid,nodev,noexec,relatime,mode=1777 0 0'
         state: present
 
-    - name: Mount hardened /tmp
-      ansible.builtin.shell:
-        cmd: |
-          if mountpoint -q /tmp; then
-            mount -o remount,nosuid,nodev,noexec,relatime,mode=1777 /tmp
-          else
-            mount /tmp
-          fi
-      changed_when: false
-
     # ==========================================================
     # STEP 14: SYSCTL NETWORK HARDENING
     # ==========================================================
