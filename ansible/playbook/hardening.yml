@@ -663,7 +663,7 @@
     # STEP 13: /tmp HARDENING
     # ==========================================================
 
-    - name: Configure /tmp as a separate tmpfs filesystem
+    - name: Configure /tmp as a separate tmpfs filesystem in fstab
       ansible.builtin.lineinfile:
         path: /etc/fstab
         regexp: '^tmpfs\s+/tmp\s+tmpfs'
