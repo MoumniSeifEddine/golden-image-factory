@@ -7,7 +7,7 @@
   tasks:
 
     # ==========================================================
-    # STEP 1: SSH HARDENING (Basic)
+    # STEP 1: SSH HARDENING
     # ==========================================================
 
     - name: Disable root login via SSH
