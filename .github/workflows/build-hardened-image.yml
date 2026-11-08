@@ -2,273 +2,245 @@ name: Build Hardened Golden AMI
 
 on:
   push:
-    branches:
-      - main
-
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: golden-image-factory-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   AWS_REGION: us-east-1
+  PACKER_VERSION: "1.11.2"
 
 jobs:
   build-and-test:
     name: Build & Test Golden AMI
     runs-on: ubuntu-22.04
+    timeout-minutes: 90
 
     steps:
-
-      # =====================================================
-      # STEP 1: Checkout repository
-      # =====================================================
-
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
-
-      # =====================================================
-      # STEP 2: Install Packer
-      # =====================================================
-
-      - name: Install Packer
+      - name: Validate Ansible playbook syntax
         shell: bash
         run: |
           set -euo pipefail
+          python3 -m venv /tmp/ansible-venv
+          /tmp/ansible-venv/bin/python -m pip install --disable-pip-version-check "ansible==10.7.0"
+          /tmp/ansible-venv/bin/ansible-playbook \
+            -i 'localhost,' -c local --syntax-check ansible/playbook/hardening.yml
 
-          PACKER_VERSION="1.11.2"
-
+      - name: Install Packer (verify release checksum)
+        shell: bash
+        run: |
+          set -euo pipefail
           cd /tmp
-
-          wget -q \
-            "https://releases.hashicorp.com/packer/${PACKER_VERSION}/packer_${PACKER_VERSION}_linux_amd64.zip"
-
-          unzip -o "packer_${PACKER_VERSION}_linux_amd64.zip"
-
-          sudo mv packer /usr/local/bin/packer
-
+          archive="packer_${PACKER_VERSION}_linux_amd64.zip"
+          curl -fsSLO "https://releases.hashicorp.com/packer/${PACKER_VERSION}/${archive}"
+          curl -fsSLO "https://releases.hashicorp.com/packer/${PACKER_VERSION}/packer_${PACKER_VERSION}_SHA256SUMS"
+          grep "${archive}$" "packer_${PACKER_VERSION}_SHA256SUMS" | sha256sum --check --status
+          unzip -o "$archive"
+          sudo install -m 0755 packer /usr/local/bin/packer
           packer version
 
-
-      # =====================================================
-      # STEP 3: Configure AWS credentials
-      # =====================================================
-
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Setup Terraform
+        id: terraform_setup
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_wrapper: false
 
-      # =====================================================
-      # STEP 4: Initialize Packer plugins
-      # =====================================================
-
-      - name: Initialize Packer
-        working-directory: packer
+      - name: Terraform format and initialize
+        id: terraform_init
+        working-directory: terraform
         shell: bash
         run: |
           set -euo pipefail
+          terraform fmt -check -recursive
+          terraform init -input=false
+          terraform validate
 
-          packer init .
 
-
-      # =====================================================
-      # STEP 5: Validate Packer template
-      # =====================================================
+      - name: Initialize Packer plugins
+        working-directory: packer
+        shell: bash
+        run: packer init .
 
       - name: Validate Packer template
         working-directory: packer
         shell: bash
-        run: |
-          set -euo pipefail
-
-          packer validate golden-image.pkr.hcl
-
-
-      # =====================================================
-      # STEP 6: Build hardened Golden AMI
-      # =====================================================
+        run: packer validate golden-image.pkr.hcl
 
       - name: Build AMI with Packer
         id: packer_build
         working-directory: packer
         shell: bash
+        env:
+          PKR_VAR_grub_password_hash: ${{ secrets.GRUB_PASSWORD_HASH }}
         run: |
           set -euo pipefail
-
-          echo "Starting Packer build..."
-
           packer build golden-image.pkr.hcl 2>&1 | tee packer_output.txt
 
-          echo "Packer build completed successfully."
-
-
-      # =====================================================
-      # STEP 7: Extract REAL AMI ID from Packer manifest
-      # =====================================================
-
-      - name: Extract AMI ID
+      - name: Extract AMI ID from Packer manifest
         id: ami_id
         working-directory: packer
         shell: bash
         run: |
           set -euo pipefail
-
-          if [ ! -f packer-manifest.json ]; then
-            echo "ERROR: packer-manifest.json was not created."
-            exit 1
-          fi
-
-          AMI_ID=$(python3 - <<'PY'
+          test -s packer-manifest.json
+          ami_id="$(python3 - <<'PY'
           import json
-
-          with open("packer-manifest.json", "r") as f:
-              data = json.load(f)
-
-          builds = data.get("builds", [])
-
+          with open("packer-manifest.json", encoding="utf-8") as handle:
+              builds = json.load(handle).get("builds", [])
           if not builds:
-              raise SystemExit("No builds found in packer-manifest.json")
-
-          artifact_id = builds[-1].get("artifact_id", "")
-
-          if not artifact_id:
-              raise SystemExit("No artifact_id found in Packer manifest")
-
-          ami_id = artifact_id.split(":")[-1]
-
+              raise SystemExit("Packer manifest contains no builds")
+          artifact = builds[-1].get("artifact_id", "")
+          ami_id = artifact.rsplit(":", 1)[-1]
           if not ami_id.startswith("ami-"):
-              raise SystemExit(
-                  f"Invalid AMI ID extracted: {ami_id}"
-              )
-
+              raise SystemExit(f"Invalid artifact_id: {artifact!r}")
           print(ami_id)
           PY
-          )
+          )"
+          printf '%s\n' "$ami_id" > ami_id.txt
+          echo "ami_id=$ami_id" >> "$GITHUB_OUTPUT"
+          echo "Built Golden AMI: $ami_id"
 
-          echo "Built Golden AMI: $AMI_ID"
-
-          echo "$AMI_ID" > ami_id.txt
-
-          echo "ami_id=$AMI_ID" >> "$GITHUB_OUTPUT"
-
-
-      # =====================================================
-      # STEP 8: Upload AMI ID
-      # =====================================================
-
-      - name: Upload AMI ID
-        uses: actions/upload-artifact@v4
-        with:
-          name: golden-ami-id
-          path: packer/ami_id.txt
-          if-no-files-found: error
-
-
-      # =====================================================
-      # STEP 9: Upload Packer manifest
-      # =====================================================
-
-      - name: Upload Packer manifest
-        uses: actions/upload-artifact@v4
-        with:
-          name: packer-manifest
-          path: packer/packer-manifest.json
-          if-no-files-found: error
-
-
-      # =====================================================
-      # STEP 10: Upload OpenSCAP reports
-      # =====================================================
-
-      - name: Upload OpenSCAP reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: openscap-reports
-          path: |
-            packer/compliance_report.html
-            packer/arf.xml
-          if-no-files-found: warn
-
-
-      # =====================================================
-      # STEP 11: Upload Packer logs if build fails
-      # =====================================================
-
-      - name: Upload Packer logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: packer-build-log
-          path: packer/packer_output.txt
-          if-no-files-found: warn
-
-
-      # =====================================================
-      # STEP 12: Launch a test VM from the new AMI (Terraform)
-      # =====================================================
- 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_wrapper: false
- 
-      - name: Terraform init
-        working-directory: terraform
-        run: terraform init -input=false
- 
-      - name: Terraform apply (launch test VM)
-        working-directory: terraform
-        run: |
-          set -euo pipefail
-          terraform apply -auto-approve -input=false \
-            -var "ami_id=${{ steps.ami_id.outputs.ami_id }}"
- 
-      - name: Verify test VM boots and passes health checks
-        working-directory: terraform
-        run: |
-          set -euo pipefail
-          INSTANCE_ID=$(terraform output -raw vm_id)
-          echo "Waiting for $INSTANCE_ID to pass EC2 system + instance status checks..."
-          aws ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID"
-          echo "Test VM is healthy: golden AMI boots correctly."
- 
-      # Always destroy the test VM, even if verification failed
-      - name: Terraform destroy (remove test VM)
-        if: always()
-        working-directory: terraform
-        run: terraform destroy -auto-approve -input=false -var "ami_id=${{ steps.ami_id.outputs.ami_id }}"
-
-      # =====================================================
-      # STEP 12: Cleanup old Golden AMIs
-      # Keeps the 3 newest AMIs
-      # =====================================================
-
-      - name: Cleanup old Golden AMIs
-        if: success()
+      - name: Summarise security assessment reports
+        if: always() && (hashFiles('packer/arf.xml') != '' || hashFiles('packer/trivy-results.json') != '')
         shell: bash
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import xml.etree.ElementTree as ET
+          from collections import Counter
+          from pathlib import Path
 
-          echo "Finding old Golden AMIs..."
+          summary = []
+          arf = Path("packer/arf.xml")
+          if arf.is_file():
+              root = ET.parse(arf).getroot()
+              results = Counter()
+              for element in root.iter():
+                  if element.tag.endswith("rule-result"):
+                      result = next((child.text for child in element if child.tag.endswith("result")), None)
+                      if result:
+                          results[result] += 1
+              summary.append("### OpenSCAP rule results")
+              summary.extend(f"- {name}: {count}" for name, count in sorted(results.items()))
 
-          OLD_AMIS=$(aws ec2 describe-images \
+          oscap_status = Path("packer/oscap_exit_code.txt")
+          if oscap_status.is_file():
+              summary.append(f"OpenSCAP process exit code: {oscap_status.read_text().strip()}")
+
+          trivy = Path("packer/trivy-results.json")
+          if trivy.is_file():
+              data = json.loads(trivy.read_text(encoding="utf-8"))
+              summary.append("### Trivy vulnerability findings")
+              for result in data.get("Results") or []:
+                  counts = Counter(v.get("Severity", "UNKNOWN") for v in (result.get("Vulnerabilities") or []))
+                  summary.append(f"- {result.get('Target', 'unknown target')}: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+
+          print("\n".join(summary))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+              handle.write("\n".join(summary) + "\n")
+          PY
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: golden-image-build-evidence
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            packer/packer-manifest.json
+            packer/ami_id.txt
+            packer/compliance_report.html
+            packer/arf.xml
+            packer/trivy-results.json
+            packer/oscap_exit_code.txt
+            packer/packer_output.txt
+
+      - name: Terraform plan and launch disposable validation VM
+        if: steps.terraform_init.outcome == 'success' && steps.ami_id.outputs.ami_id != ''
+        id: terraform_apply
+        working-directory: terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform plan -input=false -out=tfplan \
+            -var "ami_id=${{ steps.ami_id.outputs.ami_id }}"
+          terraform apply -input=false tfplan
+
+      - name: Verify EC2 instance status checks
+        if: steps.terraform_apply.outcome == 'success'
+        working-directory: terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          instance_id="$(terraform output -raw vm_id)"
+          aws ec2 wait instance-status-ok --instance-ids "$instance_id"
+          echo "EC2 system and instance status checks passed for $instance_id."
+
+      - name: Terraform destroy disposable validation VM
+        if: always() && steps.terraform_init.outcome == 'success' && steps.terraform_apply.outcome != 'skipped'
+        working-directory: terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform destroy -auto-approve -input=false \
+            -var "ami_id=${{ steps.ami_id.outputs.ami_id }}"
+
+      - name: Cleanup old Golden AMIs and their snapshots
+        if: success() && steps.ami_id.outputs.ami_id != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          old_amis_text="$(aws ec2 describe-images \
             --owners self \
-            --filters "Name=name,Values=golden-image-*" \
+            --filters \
+              "Name=name,Values=golden-image-*" \
+              "Name=tag:ManagedBy,Values=GoldenImageFactory" \
             --query 'Images | sort_by(@, &CreationDate) | reverse(@) | [3:].ImageId' \
-            --output text)
+            --output text)"
+          mapfile -t old_amis < <(printf '%s\n' "$old_amis_text" | tr '\t' '\n' | sed '/^None$/d;/^$/d')
 
-          if [ -z "$OLD_AMIS" ] || [ "$OLD_AMIS" = "None" ]; then
-            echo "No old AMIs to delete."
-            exit 0
-          fi
-
-          for AMI_ID in $OLD_AMIS; do
-            echo "Deregistering old AMI: $AMI_ID"
-
-            aws ec2 deregister-image \
-              --image-id "$AMI_ID"
+          for ami_id in "${old_amis[@]}"; do
+            snapshots_text="$(aws ec2 describe-images --image-ids "$ami_id" \
+              --query 'Images[0].BlockDeviceMappings[?Ebs.SnapshotId!=null].Ebs.SnapshotId' \
+              --output text)"
+            mapfile -t snapshots < <(printf '%s\n' "$snapshots_text" | tr '\t' '\n' | sed '/^None$/d;/^$/d')
+            echo "Deregistering managed AMI $ami_id"
+            aws ec2 deregister-image --image-id "$ami_id"
+            for snapshot_id in "${snapshots[@]}"; do
+              echo "Deleting snapshot $snapshot_id"
+              aws ec2 delete-snapshot --snapshot-id "$snapshot_id"
+            done
           done
+
+      - name: Upload Terraform recovery state on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: terraform-diagnostics
+          if-no-files-found: ignore
+          retention-days: 3
+          path: |
+            terraform/terraform.tfstate
+            terraform/.terraform.lock.hcl

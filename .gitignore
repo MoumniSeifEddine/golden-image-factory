@@ -1,0 +1,21 @@
+# Packer generated files
+packer/packer-manifest.json
+packer/ami_id.txt
+packer/packer_output.txt
+packer/compliance_report.html
+packer/arf.xml
+packer/trivy-results.json
+packer/packer_cache/
+
+# Terraform generated files
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
+# Local secrets / variable files
+*.auto.tfvars
+*.auto.pkrvars.hcl
+.env

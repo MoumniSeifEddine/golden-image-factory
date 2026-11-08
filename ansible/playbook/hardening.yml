@@ -7,44 +7,78 @@
   tasks:
 
     # ==========================================================
-    # STEP 1: SSH HARDENING 
+    # STEP 1: SSH HARDENING
     # ==========================================================
 
-    - name: Disable root login via SSH
+    - name: Ensure dedicated SSH access group exists
+      ansible.builtin.group:
+        name: ssh-users
+        state: present
+
+    - name: Add default Ubuntu account to the SSH access group
+      ansible.builtin.user:
+        name: ubuntu
+        groups: ssh-users
+        append: true
+
+    - name: Ensure OpenSSH loads configuration drop-ins
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
-        regexp: '^#?\s*PermitRootLogin'
-        line: 'PermitRootLogin no'
+        line: 'Include /etc/ssh/sshd_config.d/*.conf'
+        insertafter: BOF
         state: present
         validate: '/usr/sbin/sshd -t -f %s'
       notify: Restart SSH
 
-    - name: Disable empty passwords
+    - name: Restrict SSH access to the dedicated administrative group
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
-        regexp: '^#?\s*PermitEmptyPasswords'
-        line: 'PermitEmptyPasswords no'
+        regexp: '^AllowGroups\s+'
+        line: 'AllowGroups ssh-users'
+        insertafter: '^Include /etc/ssh/sshd_config.d/\*\.conf$'
         state: present
-        validate: '/usr/sbin/sshd -t -f %s'
       notify: Restart SSH
 
-    - name: Set SSH idle timeout
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?\s*ClientAliveInterval'
-        line: 'ClientAliveInterval 300'
-        state: present
+    - name: Deploy hardened OpenSSH server configuration
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/00-golden-image-factory.conf
+        owner: root
+        group: root
+        mode: '0600'
         validate: '/usr/sbin/sshd -t -f %s'
+        content: |
+          PermitRootLogin no
+          PermitEmptyPasswords no
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PubkeyAuthentication yes
+          AuthenticationMethods publickey
+          UsePAM yes
+          MaxAuthTries 4
+          LoginGraceTime 60
+          LogLevel INFO
+          MaxSessions 4
+          MaxStartups 10:30:60
+          ClientAliveInterval 300
+          ClientAliveCountMax 3
+          HostbasedAuthentication no
+          IgnoreRhosts yes
+          PermitUserEnvironment no
+          X11Forwarding no
+          AllowAgentForwarding no
+          AllowTcpForwarding no
+          PermitTunnel no
+          GatewayPorts no
+          Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+          MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512,hmac-sha2-256
+          KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group14-sha256
+          Banner /etc/issue.net
       notify: Restart SSH
 
-    - name: Set SSH max authentication attempts
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?\s*MaxAuthTries'
-        line: 'MaxAuthTries 4'
-        state: present
-        validate: '/usr/sbin/sshd -t -f %s'
-      notify: Restart SSH
+    - name: Validate complete OpenSSH configuration
+      ansible.builtin.command:
+        cmd: /usr/sbin/sshd -t
+      changed_when: false
 
     # ==========================================================
     # STEP 2: PASSWORD POLICY
@@ -59,7 +93,7 @@
     - name: Ensure pwquality.conf exists
       ansible.builtin.file:
         path: /etc/security/pwquality.conf
-        state: touch
+        state: file
         owner: root
         group: root
         mode: '0644'
@@ -106,11 +140,11 @@
         line: 'minclass = 4'
         state: present
 
-    - name: Set password hashing algorithm to SHA512
+    - name: Retain Ubuntu's modern yescrypt password hashing default
       ansible.builtin.lineinfile:
         path: /etc/login.defs
         regexp: '^\s*ENCRYPT_METHOD'
-        line: 'ENCRYPT_METHOD SHA512'
+        line: 'ENCRYPT_METHOD yescrypt'
         state: present
 
     - name: Set password maximum age
@@ -134,8 +168,8 @@
         line: 'PASS_MIN_LEN 14'
         state: present
 
-    # pam_tally2 was removed in Ubuntu 22.04; adding it to common-auth breaks
-    # authentication. Configure pam_faillock via its config file instead.
+    # pam_tally2 was removed in Ubuntu 22.04. Use the supported pam_faillock
+    # module and wire it into common-auth as well as its policy configuration.
     - name: Configure account lockout policy (faillock)
       ansible.builtin.lineinfile:
         path: /etc/security/faillock.conf
@@ -148,15 +182,78 @@
         mode: '0644'
       loop:
         - { key: 'deny', value: '5' }
+        - { key: 'fail_interval', value: '900' }
         - { key: 'unlock_time', value: '900' }
+
+    - name: Enable PAM faillock pre-authentication check
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/common-auth
+        line: 'auth required pam_faillock.so preauth silent'
+        insertafter: BOF
+        state: present
+        backup: true
+
+    - name: Enable PAM faillock failure and success accounting
+      ansible.builtin.blockinfile:
+        path: /etc/pam.d/common-auth
+        marker: "# {mark} GOLDEN IMAGE FACTORY FAILLOCK"
+        insertafter: '^auth \[success=1 default=ignore\] pam_unix\.so'
+        block: |
+          auth [default=die] pam_faillock.so authfail
+          auth sufficient pam_faillock.so authsucc
+        backup: true
+
+    - name: Enable PAM password quality checks in the password stack
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/common-password
+        regexp: '^password\s+requisite\s+pam_pwquality\.so'
+        line: 'password requisite pam_pwquality.so retry=3'
+        insertbefore: '^password \[success=1 default=ignore\] pam_unix\.so'
+        state: present
+        backup: true
 
     - name: Configure PAM password reuse policy (pwhistory)
       ansible.builtin.lineinfile:
         path: /etc/pam.d/common-password
-        regexp: '^\s*password\s+required\s+pam_pwhistory.so'
-        line: 'password required pam_pwhistory.so use_authtok remember=5'
+        regexp: '^password\s+requisite\s+pam_pwhistory\.so'
+        line: 'password requisite pam_pwhistory.so remember=5 use_authtok'
+        insertafter: '^password requisite pam_pwquality\.so'
         state: present
         backup: true
+
+    - name: Ensure PAM Unix password module consumes the checked password token
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/common-password
+        regexp: '^password \[success=1 default=ignore\] pam_unix\.so'
+        line: 'password [success=1 default=ignore] pam_unix.so obscure yescrypt use_authtok'
+        state: present
+        backup: true
+
+    - name: Set default inactive period for newly created accounts
+      ansible.builtin.lineinfile:
+        path: /etc/default/useradd
+        regexp: '^INACTIVE='
+        line: 'INACTIVE=30'
+        state: present
+
+    - name: Set inactivity period for the default Ubuntu account
+      ansible.builtin.command:
+        cmd: chage --inactive 30 ubuntu
+      changed_when: false
+
+    - name: Ensure dedicated empty su restriction group exists
+      ansible.builtin.group:
+        name: sugroup
+        state: present
+
+    - name: Restrict su to members of the dedicated group
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/su
+        line: 'auth required pam_wheel.so use_uid group=sugroup'
+        insertafter: '^auth\s+sufficient\s+pam_rootok\.so'
+        state: present
+        backup: true
+
 
     # ==========================================================
     # STEP 3: SYSTEM HARDENING
@@ -168,6 +265,91 @@
         regexp: '^\s*UMASK'
         line: 'UMASK 027'
         state: present
+
+    - name: Set default umask in system-wide profile
+      ansible.builtin.lineinfile:
+        path: /etc/profile
+        regexp: '^\s*umask\s+'
+        line: 'umask 027'
+        state: present
+
+    - name: Set default umask for interactive Bash shells
+      ansible.builtin.lineinfile:
+        path: /etc/bash.bashrc
+        regexp: '^\s*umask\s+'
+        line: 'umask 027'
+        state: present
+
+    - name: Configure interactive shell idle timeout
+      ansible.builtin.copy:
+        dest: /etc/profile.d/99-session-timeout.sh
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          # Managed by Golden Image Factory
+          case "$-" in
+            *i*) TMOUT=900; readonly TMOUT; export TMOUT ;;
+          esac
+
+    - name: Set TMOUT in the system profile for CIS benchmark compatibility
+      ansible.builtin.lineinfile:
+        path: /etc/profile
+        line: 'TMOUT=900; readonly TMOUT; export TMOUT'
+        insertafter: EOF
+        state: present
+
+    - name: Set TMOUT in the global Bash configuration
+      ansible.builtin.lineinfile:
+        path: /etc/bash.bashrc
+        line: 'TMOUT=900; readonly TMOUT; export TMOUT'
+        insertafter: EOF
+        state: present
+
+    - name: Configure local login warning banner
+      ansible.builtin.copy:
+        dest: /etc/issue
+        owner: root
+        group: root
+        mode: '0644'
+        content: "Authorized access only. Activity may be monitored.\n"
+
+    - name: Configure remote login warning banner
+      ansible.builtin.copy:
+        dest: /etc/issue.net
+        owner: root
+        group: root
+        mode: '0644'
+        content: "Authorized access only. Activity may be monitored.\n"
+
+    - name: Create sudo log file if it does not exist
+      ansible.builtin.copy:
+        dest: /var/log/sudo.log
+        content: ""
+        force: false
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Enforce sudo log file permissions
+      ansible.builtin.file:
+        path: /var/log/sudo.log
+        state: file
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Configure sudo logging and re-authentication
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/99-golden-image-hardening
+        owner: root
+        group: root
+        mode: '0440'
+        validate: '/usr/sbin/visudo -cf %s'
+        content: |
+          Defaults use_pty
+          Defaults logfile="/var/log/sudo.log"
+          Defaults timestamp_timeout=0
 
     # ==========================================================
     # STEP 4: AUDITING
@@ -193,6 +375,37 @@
         group: root
         mode: '0750'
 
+    - name: Install baseline audit rules
+      ansible.builtin.copy:
+        dest: /etc/audit/rules.d/50-golden-image.rules
+        owner: root
+        group: root
+        mode: '0640'
+        content: |
+          ## Identity and authentication files
+          -w /etc/passwd -p wa -k identity
+          -w /etc/group -p wa -k identity
+          -w /etc/shadow -p wa -k identity
+          -w /etc/gshadow -p wa -k identity
+          ## Privileged configuration
+          -w /etc/sudoers -p wa -k scope
+          -w /etc/sudoers.d/ -p wa -k scope
+          ## Authentication and access-control configuration
+          -w /etc/pam.d/common-auth -p wa -k auth
+          -w /etc/security/faillock.conf -p wa -k auth
+          -w /etc/ssh/sshd_config -p wa -k sshd
+          ## Time changes
+          -a always,exit -F arch=b64 -S adjtimex,settimeofday,clock_settime -k time-change
+          -a always,exit -F arch=b64 -S sethostname,setdomainname -k system-locale
+          ## Audit configuration
+          -w /etc/audit/ -p wa -k auditconfig
+          -w /var/log/audit/ -p wa -k auditlog
+
+    - name: Load audit rules
+      ansible.builtin.command:
+        cmd: augenrules --load
+      changed_when: false
+
     # ==========================================================
     # STEP 5: OPENSCAP AND SCAP SECURITY GUIDE
     # ==========================================================
@@ -217,6 +430,40 @@
       ansible.builtin.debug:
         var: oscap_version.stdout
 
+    - name: Install systemd journal remote support package
+      ansible.builtin.apt:
+        name: systemd-journal-remote
+        state: present
+        update_cache: true
+
+    - name: Ensure persistent journal storage directory exists
+      ansible.builtin.file:
+        path: /var/log/journal
+        state: directory
+        owner: root
+        group: systemd-journal
+        mode: '2755'
+
+    - name: Ensure journald drop-in directory exists
+      ansible.builtin.file:
+        path: /etc/systemd/journald.conf.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Configure persistent and compressed system journal
+      ansible.builtin.copy:
+        dest: /etc/systemd/journald.conf.d/99-golden-image-hardening.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Journal]
+          Compress=yes
+          Storage=persistent
+      notify: Restart systemd-journald
+
     # ==========================================================
     # STEP 6: AIDE (File Integrity Monitoring)
     # ==========================================================
@@ -227,30 +474,38 @@
         state: present
         update_cache: true
 
-    - name: Initialize AIDE database
-      ansible.builtin.command:
-        cmd: aideinit -y -f
-      register: aide_init
-      changed_when: "'AIDE, version' in aide_init.stdout"
-      failed_when: false
+    - name: Ensure AIDE log directory exists
+      ansible.builtin.file:
+        path: /var/log/aide
+        state: directory
+        owner: root
+        group: root
+        mode: '0750'
 
-    - name: Move AIDE database to standard location
-      ansible.builtin.command:
-        cmd: mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
-      when: aide_init.changed
-      changed_when: true
+    - name: Exclude ephemeral temporary files from AIDE monitoring
+      ansible.builtin.blockinfile:
+        path: /etc/aide/aide.conf
+        marker: "# {mark} GOLDEN IMAGE FACTORY TEMPORARY PATH EXCLUSIONS"
+        block: |
+          !/tmp
+          !/var/tmp
 
-    - name: Configure AIDE to verify audit tools
-      ansible.builtin.command:
-        cmd: aide --check
-      register: aide_check
-      changed_when: false
-      failed_when: false
+    - name: Configure AIDE monitoring for audit tools
+      ansible.builtin.blockinfile:
+        path: /etc/aide/aide.conf
+        marker: "# {mark} GOLDEN IMAGE FACTORY AUDIT TOOL MONITORING"
+        block: |
+          /usr/sbin/auditctl p+i+n+u+g+s+b+acl+xattrs+sha512
+          /usr/sbin/auditd p+i+n+u+g+s+b+acl+xattrs+sha512
+          /usr/sbin/ausearch p+i+n+u+g+s+b+acl+xattrs+sha512
+          /usr/sbin/aureport p+i+n+u+g+s+b+acl+xattrs+sha512
+          /usr/sbin/autrace p+i+n+u+g+s+b+acl+xattrs+sha512
+          /usr/sbin/augenrules p+i+n+u+g+s+b+acl+xattrs+sha512
 
     - name: Add AIDE cron job for daily execution
       ansible.builtin.cron:
         name: "Run AIDE daily check"
-        job: "/usr/bin/aide --check > /var/log/aide/aide_check.log 2>&1"
+        job: "/usr/bin/aide --config=/etc/aide/aide.conf --check > /var/log/aide/aide_check.log 2>&1"
         hour: 2
         minute: 0
         user: root
@@ -267,29 +522,70 @@
           - grub-efi-amd64-bin
         state: present
 
-    - name: Generate GRUB password hash
-      ansible.builtin.shell:
-        cmd: |
-          echo -e "cis_password\ncis_password" | grub-mkpasswd-pbkdf2 | grep -o 'grub.pbkdf2.*'
-        executable: /bin/bash
-      register: grub_hash
-      changed_when: false
+    # Never generate or store a plaintext GRUB password in the image build.
+    # Supply a precomputed PBKDF2 hash through a protected CI secret.
+    - name: Validate supplied GRUB password hash format
+      ansible.builtin.assert:
+        that:
+          - grub_password_hash is match('^grub\.pbkdf2\.sha512\.[0-9]+\..+$')
+        fail_msg: "GRUB_PASSWORD_HASH must contain a grub.pbkdf2.sha512 hash."
+      when: grub_password_hash | default('') | length > 0
+      no_log: true
 
-    - name: Set GRUB superuser and password in 40_custom
-      ansible.builtin.lineinfile:
+    - name: Configure GRUB superuser and password hash
+      ansible.builtin.blockinfile:
         path: /etc/grub.d/40_custom
-        line: "{{ item }}"
-        state: present
+        marker: "# {mark} ANSIBLE MANAGED GRUB AUTHENTICATION"
+        block: |
+          set superusers="root"
+          password_pbkdf2 root {{ grub_password_hash }}
         create: true
+        owner: root
+        group: root
         mode: '0755'
-      loop:
-        - "set superusers=\"root\""
-        - "password_pbkdf2 root {{ grub_hash.stdout }}"
+      no_log: true
+      when: grub_password_hash | default('') | length > 0
+      register: grub_password_configured
 
-    - name: Update GRUB configuration
+    - name: Enable AppArmor kernel parameter in GRUB
+      ansible.builtin.lineinfile:
+        path: /etc/default/grub
+        regexp: '^(GRUB_CMDLINE_LINUX_DEFAULT=")(?![^"]*\bapparmor=1\b)([^"]*)(")$'
+        line: '\1\2 apparmor=1\3'
+        backrefs: true
+        state: present
+      register: grub_apparmor_parameter
+
+    - name: Enable AppArmor security module in GRUB
+      ansible.builtin.lineinfile:
+        path: /etc/default/grub
+        regexp: '^(GRUB_CMDLINE_LINUX_DEFAULT=")(?![^"]*\bsecurity=apparmor\b)([^"]*)(")$'
+        line: '\1\2 security=apparmor\3'
+        backrefs: true
+        state: present
+      register: grub_apparmor_security
+
+    - name: Regenerate GRUB configuration when settings changed
       ansible.builtin.command:
         cmd: update-grub
+      when: grub_apparmor_parameter.changed or grub_apparmor_security.changed or (grub_password_configured.changed | default(false))
       changed_when: true
+
+    - name: Restrict GRUB custom configuration permissions
+      ansible.builtin.file:
+        path: /etc/grub.d/40_custom
+        state: file
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Restrict generated GRUB configuration permissions
+      ansible.builtin.file:
+        path: /boot/grub/grub.cfg
+        state: file
+        owner: root
+        group: root
+        mode: '0600'
 
     # ==========================================================
     # STEP 8: FIX HIGH SEVERITY – systemd_timesyncd (NTP)
@@ -325,114 +621,6 @@
 
         
     # ==========================================================
-    # STEP 9: SSH HARDENING (Advanced)
-    # ==========================================================
-
-    - name: Configure SSH strong ciphers
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^\s*Ciphers'
-        line: 'Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr'
-        state: present
-      notify: Restart SSH
-
-    - name: Configure SSH strong MACs
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^\s*MACs'
-        line: 'MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com'
-        state: present
-      notify: Restart SSH
-
-    - name: Configure SSH strong key exchange algorithms
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^\s*KexAlgorithms'
-        line: 'KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512'
-        state: present
-      notify: Restart SSH
-
-    - name: Set SSH LoginGraceTime
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^\s*LoginGraceTime'
-        line: 'LoginGraceTime 60'
-        state: present
-      notify: Restart SSH
-
-    - name: Set SSH LogLevel to INFO
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^\s*LogLevel'
-        line: 'LogLevel INFO'
-        state: present
-      notify: Restart SSH
-
-    - name: Set SSH MaxSessions
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^\s*MaxSessions'
-        line: 'MaxSessions 4'
-        state: present
-      notify: Restart SSH
-
-    - name: Set SSH MaxStartups
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^\s*MaxStartups'
-        line: 'MaxStartups 10:30:60'
-        state: present
-      notify: Restart SSH
-
-    - name: Set SSH ClientAliveCountMax
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^\s*ClientAliveCountMax'
-        line: 'ClientAliveCountMax 3'
-        state: present
-      notify: Restart SSH
-
-    - name: Set SSH ClientAliveInterval (redundant, but keep)
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^\s*ClientAliveInterval'
-        line: 'ClientAliveInterval 300'
-        state: present
-      notify: Restart SSH
-
-    - name: Disable SSH HostBasedAuthentication
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^\s*HostBasedAuthentication'
-        line: 'HostBasedAuthentication no'
-        state: present
-      notify: Restart SSH
-
-    - name: Disable SSH .rhosts support
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^\s*IgnoreRhosts'
-        line: 'IgnoreRhosts yes'
-        state: present
-      notify: Restart SSH
-
-    - name: Disable SSH environment options
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^\s*PermitUserEnvironment'
-        line: 'PermitUserEnvironment no'
-        state: present
-      notify: Restart SSH
-
-    - name: Enable SSH warning banner
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^\s*Banner'
-        line: 'Banner /etc/issue.net'
-        state: present
-      notify: Restart SSH
-
-    # ==========================================================
     # STEP 10: MOUNT OPTIONS FOR /dev/shm
     # ==========================================================
 
@@ -442,6 +630,14 @@
         src: tmpfs
         fstype: tmpfs
         opts: defaults,noexec,nosuid,nodev
+        state: mounted
+
+    - name: Mount /tmp as a bounded hardened tmpfs
+      ansible.builtin.mount:
+        path: /tmp
+        src: tmpfs
+        fstype: tmpfs
+        opts: defaults,rw,nosuid,nodev,noexec,relatime,size=512M,mode=1777
         state: mounted
 
     # ==========================================================
@@ -465,6 +661,74 @@
         state: stopped
       failed_when: false
 
+    - name: Remove unused firewall frontend and mail transfer agent
+      ansible.builtin.apt:
+        name:
+          - ufw
+          - postfix
+        state: absent
+        purge: true
+        autoremove: true
+
+    - name: Install nftables firewall
+      ansible.builtin.apt:
+        name: nftables
+        state: present
+        update_cache: true
+
+    - name: Configure default-deny inbound nftables policy
+      ansible.builtin.copy:
+        dest: /etc/nftables.conf
+        owner: root
+        group: root
+        mode: '0644'
+        validate: '/usr/sbin/nft -c -f %s'
+        content: |
+          flush ruleset
+          table inet filter {
+            chain input {
+              type filter hook input priority 0; policy drop;
+              iif lo accept
+              ip saddr 127.0.0.0/8 iif != lo drop
+              ip6 saddr ::1 iif != lo drop
+              udp sport 67 udp dport 68 accept
+              udp sport 547 udp dport 546 accept
+              ct state established,related accept
+              ip protocol icmp accept
+              meta l4proto ipv6-icmp accept
+              tcp dport 22 ct state new accept
+            }
+            chain forward {
+              type filter hook forward priority 0; policy drop;
+            }
+            chain output {
+              type filter hook output priority 0; policy accept;
+            }
+          }
+      notify: Restart nftables
+
+    - name: Enable and start nftables firewall
+      ansible.builtin.systemd:
+        name: nftables
+        enabled: true
+        state: started
+
+    - name: Set local system log directory permissions
+      ansible.builtin.file:
+        path: /var/log
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Set SSH daemon configuration permissions
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config
+        state: file
+        owner: root
+        group: root
+        mode: '0600'
+
     # ==========================================================
     # STEP 12: COMPLETE SYSCTL HARDENING
     # ==========================================================
@@ -475,10 +739,12 @@
         value: "{{ item.value }}"
         state: present
         reload: true
-        sysctl_file: /etc/sysctl.d/99-cis-hardening.conf
+        sysctl_file: /etc/sysctl.d/99-z-golden-image-hardening.conf
       loop:
         - { name: 'net.ipv4.conf.all.rp_filter', value: '1' }
         - { name: 'net.ipv4.conf.default.rp_filter', value: '1' }
+        - { name: 'net.ipv4.conf.all.accept_source_route', value: '0' }
+        - { name: 'net.ipv4.conf.default.accept_source_route', value: '0' }
         - { name: 'net.ipv4.conf.all.accept_redirects', value: '0' }
         - { name: 'net.ipv4.conf.default.accept_redirects', value: '0' }
         - { name: 'net.ipv4.conf.all.secure_redirects', value: '0' }
@@ -491,7 +757,7 @@
         value: "{{ item.value }}"
         state: present
         reload: true
-        sysctl_file: /etc/sysctl.d/99-cis-hardening.conf
+        sysctl_file: /etc/sysctl.d/99-z-golden-image-hardening.conf
       loop:
         - { name: 'net.ipv4.conf.all.log_martians', value: '1' }
         - { name: 'net.ipv4.conf.default.log_martians', value: '1' }
@@ -503,11 +769,97 @@
         - { name: 'kernel.randomize_va_space', value: '2' }
         - { name: 'fs.suid_dumpable', value: '0' }
 
+    - name: Set restrictive permissions on cron directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: '/etc/cron.d', mode: '0700' }
+        - { path: '/etc/cron.daily', mode: '0700' }
+        - { path: '/etc/cron.hourly', mode: '0700' }
+        - { path: '/etc/cron.monthly', mode: '0700' }
+        - { path: '/etc/cron.weekly', mode: '0700' }
+
+    - name: Set restrictive permissions on system crontab
+      ansible.builtin.file:
+        path: /etc/crontab
+        state: file
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Apply IPv6 network hardening
+      ansible.builtin.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: true
+        sysctl_file: /etc/sysctl.d/99-z-golden-image-hardening.conf
+      loop:
+        - { name: 'net.ipv6.conf.all.accept_redirects', value: '0' }
+        - { name: 'net.ipv6.conf.default.accept_redirects', value: '0' }
+        - { name: 'net.ipv6.conf.all.accept_source_route', value: '0' }
+        - { name: 'net.ipv6.conf.default.accept_source_route', value: '0' }
+        - { name: 'net.ipv6.conf.all.accept_ra', value: '0' }
+        - { name: 'net.ipv6.conf.default.accept_ra', value: '0' }
+        - { name: 'net.ipv6.conf.all.forwarding', value: '0' }
+
+    - name: Reload all persistent sysctl configuration in lexical order
+      ansible.builtin.command:
+        cmd: sysctl --system
+      changed_when: false
+
+    - name: Verify critical IPv4 hardening parameters are active
+      ansible.builtin.command:
+        cmd: "sysctl -n {{ item.name }}"
+      register: sysctl_runtime_check
+      changed_when: false
+      failed_when: sysctl_runtime_check.stdout | trim != item.value
+      loop:
+        - { name: 'net.ipv4.conf.all.rp_filter', value: '1' }
+        - { name: 'net.ipv4.conf.default.rp_filter', value: '1' }
+        - { name: 'net.ipv4.conf.all.accept_source_route', value: '0' }
+        - { name: 'net.ipv4.conf.default.accept_source_route', value: '0' }
+
+    - name: Disable unused kernel modules
+      ansible.builtin.copy:
+        dest: /etc/modprobe.d/99-golden-image-blacklist.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          install cramfs /bin/false
+          blacklist cramfs
+          install usb-storage /bin/false
+          blacklist usb-storage
+
+    - name: Disable core dumps through limits
+      ansible.builtin.copy:
+        dest: /etc/security/limits.d/99-golden-image-hardening.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          * hard core 0
+
   # ============================================================
   # HANDLERS
   # ============================================================
 
   handlers:
+    - name: Restart nftables
+      ansible.builtin.service:
+        name: nftables
+        state: restarted
+
+    - name: Restart systemd-journald
+      ansible.builtin.service:
+        name: systemd-journald
+        state: restarted
+
     - name: Restart SSH
       ansible.builtin.service:
         name: ssh
