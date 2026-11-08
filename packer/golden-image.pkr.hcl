@@ -167,7 +167,7 @@ build {
       "sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y",
       "sudo apt-get autoremove -y",
 
-      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-apt software-properties-common",
+      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3.10-venv python3-apt software-properties-common",
 
       "sudo python3 -m venv /opt/ansible-venv",
       "sudo /opt/ansible-venv/bin/pip install --no-cache-dir ansible==10.7.0"
