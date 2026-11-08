@@ -75,3 +75,4 @@ resource "aws_instance" "test_vm" {
     create_before_destroy = false
   }
 }
+
