@@ -312,6 +312,8 @@ build {
       "sudo rm -rf /root/.cache/trivy",
       "sudo apt-get autoremove -y",
       "sudo apt-get clean",
+      "if [ ! -s /etc/aide/aide.conf ]; then echo 'AIDE config missing; restoring aide-common conffiles'; sudo apt-get install --reinstall -y -o Dpkg::Options::=--force-confmiss aide-common; fi",
+      "sudo test -s /etc/aide/aide.conf",
       "sudo aide --config=/etc/aide/aide.conf --init",
       "sudo test -s /var/lib/aide/aide.db.new",
       "sudo install -o root -g root -m 0600 /var/lib/aide/aide.db.new /var/lib/aide/aide.db",
