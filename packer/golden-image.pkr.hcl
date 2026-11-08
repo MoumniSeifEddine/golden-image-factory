@@ -97,7 +97,9 @@ source "amazon-ebs" "golden-image" {
 
   ami_name = "${var.ami_name_prefix}-${formatdate("YYYYMMDD-hhmmss", timestamp())}"
 
-  ami_description = "Hardened Ubuntu 22.04 Golden AMI with CIS-inspired hardening, auditd, Trivy vulnerability scanning, and OpenSCAP compliance validation."
+  # NOTE: do NOT set ami_description (or ami_users/ami_groups/snapshot_users).
+  # Packer applies them via ec2:ModifyImageAttribute, which the AWS Academy
+  # (voclabs) service control policy explicitly denies. Use a tag instead.
 
 
   tags = {
@@ -110,6 +112,8 @@ source "amazon-ebs" "golden-image" {
     OS_Version = "Ubuntu 22.04"
 
     Hardened = "true"
+
+    Description = "Hardened Ubuntu 22.04 Golden AMI - CIS-inspired hardening, auditd, Trivy, OpenSCAP"
   }
 }
 
