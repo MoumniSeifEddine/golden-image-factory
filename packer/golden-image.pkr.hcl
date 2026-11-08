@@ -312,7 +312,7 @@ build {
       "sudo rm -rf /root/.cache/trivy",
       "sudo apt-get autoremove -y",
       "sudo apt-get clean",
-      "sudo aideinit -y -f",
+      "sudo aide --config=/etc/aide/aide.conf --init",
       "sudo test -s /var/lib/aide/aide.db.new",
       "sudo install -o root -g root -m 0600 /var/lib/aide/aide.db.new /var/lib/aide/aide.db",
       "sudo aide --config=/etc/aide/aide.conf --check"
