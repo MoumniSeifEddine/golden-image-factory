@@ -279,11 +279,17 @@ build {
 
       "curl -fL --retry 3 --retry-all-errors -o /tmp/scap-security-guide.zip https://github.com/ComplianceAsCode/content/releases/download/v0.1.76/scap-security-guide-0.1.76.zip",
 
-      "unzip -o /tmp/scap-security-guide.zip -d /tmp/scap-content",
+      # Extract only the Ubuntu 22.04 datastream. The release archive contains
+      # content for many unrelated operating systems and expands substantially.
+      "SCAP_ENTRY=$(unzip -Z1 /tmp/scap-security-guide.zip | grep -m1 -E '(^|/)ssg-ubuntu2204-ds.xml$' || true)",
+      "if [ -z \"$SCAP_ENTRY\" ]; then echo 'ERROR: Ubuntu 22.04 SCAP content not found in release archive'; exit 1; fi",
+      "unzip -p /tmp/scap-security-guide.zip \"$SCAP_ENTRY\" > /tmp/scap-content/ssg-ubuntu2204-ds.xml",
+      "test -s /tmp/scap-content/ssg-ubuntu2204-ds.xml",
+      "rm -f /tmp/scap-security-guide.zip",
 
-      "SCAP_CONTENT=$(find /tmp/scap-content -type f -name 'ssg-ubuntu2204-ds.xml' | head -n 1)",
+      "SCAP_CONTENT=/tmp/scap-content/ssg-ubuntu2204-ds.xml",
 
-      "if [ -z \"$SCAP_CONTENT\" ]; then echo 'ERROR: Ubuntu 22.04 SCAP content not found'; exit 1; fi",
+      "if [ ! -s \"$SCAP_CONTENT\" ]; then echo 'ERROR: Ubuntu 22.04 SCAP content not found'; exit 1; fi",
 
       "echo \"Using SCAP content: $SCAP_CONTENT\"",
 
