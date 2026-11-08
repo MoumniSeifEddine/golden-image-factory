@@ -210,23 +210,23 @@ jobs:
       # =====================================================
       # STEP 12: Launch a test VM from the new AMI (Terraform)
       # =====================================================
-
+ 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
-
+ 
       - name: Terraform init
         working-directory: terraform
         run: terraform init -input=false
-
+ 
       - name: Terraform apply (launch test VM)
         working-directory: terraform
         run: |
           set -euo pipefail
           terraform apply -auto-approve -input=false \
             -var "ami_id=${{ steps.ami_id.outputs.ami_id }}"
-
+ 
       - name: Verify test VM boots and passes health checks
         working-directory: terraform
         run: |
@@ -235,16 +235,15 @@ jobs:
           echo "Waiting for $INSTANCE_ID to pass EC2 system + instance status checks..."
           aws ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID"
           echo "Test VM is healthy: golden AMI boots correctly."
-
+ 
       # Always destroy the test VM, even if verification failed
       - name: Terraform destroy (remove test VM)
         if: always()
         working-directory: terraform
         run: terraform destroy -auto-approve -input=false -var "ami_id=${{ steps.ami_id.outputs.ami_id }}"
 
-
       # =====================================================
-      # STEP 13: Cleanup old Golden AMIs
+      # STEP 12: Cleanup old Golden AMIs
       # Keeps the 3 newest AMIs
       # =====================================================
 
