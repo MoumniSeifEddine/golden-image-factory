@@ -62,3 +62,4 @@ resource "aws_instance" "test_vm" {
     ManagedBy = "GoldenImageFactory"
   }
 }
+
