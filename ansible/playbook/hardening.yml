@@ -468,9 +468,15 @@
     # STEP 6: AIDE (File Integrity Monitoring)
     # ==========================================================
 
-    # aide-common is installed explicitly (manual install) so that a later
-    # "autoremove" cannot delete it, and without recommends so that the Postfix
-    # mail server (a recommended MTA) is never pulled in.
+    # On Ubuntu 22.04 aide-common has a hard dependency on a mail transfer agent
+    # (observed: Postfix and bsd-mailx are installed even without recommends), so
+    # Postfix cannot be removed without also removing AIDE. Instead it is kept
+    # and configured local-only (inet_interfaces = loopback-only), which satisfies
+    # the CIS "MTA must not listen on a non-loopback address" rules.
+    - name: Preseed Postfix as "Local only" (non-interactive install)
+      ansible.builtin.shell: echo 'postfix postfix/main_mailer_type select Local only' | debconf-set-selections
+      changed_when: true
+
     - name: Install AIDE
       ansible.builtin.apt:
         name:
@@ -479,6 +485,17 @@
         state: present
         install_recommends: false
         update_cache: true
+
+    - name: Restrict Postfix to loopback only (required MTA dependency of AIDE)
+      ansible.builtin.command: postconf -e "inet_interfaces = loopback-only"
+      changed_when: true
+
+    - name: Restart Postfix to apply loopback-only configuration
+      ansible.builtin.systemd:
+        name: postfix
+        enabled: true
+        state: restarted
+      failed_when: false
 
     - name: Ensure AIDE log directory exists
       ansible.builtin.file:
@@ -667,26 +684,23 @@
         state: stopped
       failed_when: false
 
-    - name: Remove unused firewall frontend and mail transfer agent
+    - name: Remove unused firewall frontend (Postfix is kept because AIDE depends on an MTA)
       ansible.builtin.apt:
-        name:
-          - ufw
-          - postfix
+        name: ufw
         state: absent
         purge: true
-        autoremove: true
 
     - name: Verify AIDE configuration survived package removal
       ansible.builtin.stat:
         path: /etc/aide/aide.conf
       register: aide_conf_after_cleanup
 
-    - name: Fail early if AIDE was removed together with the MTA
+    - name: Fail early if AIDE was removed unexpectedly
       ansible.builtin.assert:
         that:
           - aide_conf_after_cleanup.stat.exists
           - aide_conf_after_cleanup.stat.size > 0
-        fail_msg: "/etc/aide/aide.conf is missing after removing postfix/ufw; aide-common was removed as a dependency."
+        fail_msg: "/etc/aide/aide.conf is missing after removing ufw; aide-common was removed unexpectedly."
 
     - name: Install nftables firewall
       ansible.builtin.apt:
