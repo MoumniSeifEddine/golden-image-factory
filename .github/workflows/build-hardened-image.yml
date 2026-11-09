@@ -177,15 +177,29 @@ jobs:
             packer/oscap_exit_code.txt
             packer/packer_output.txt
 
-      - name: Terraform plan and launch disposable validation VM
+      # The AWS Academy sandbox only allows launching Amazon-provided AMIs, so
+      # launching the custom golden AMI is denied there (ec2:RunInstances).
+      # The plan is therefore always produced as a configuration check, while the
+      # real launch/verify/destroy is opt-in: set the repository variable
+      # RUN_TERRAFORM_VALIDATION=true in an account that allows custom AMIs.
+      - name: Terraform plan (configuration check, no resources created)
         if: steps.terraform_init.outcome == 'success' && steps.ami_id.outputs.ami_id != ''
-        id: terraform_apply
+        id: terraform_plan
+        continue-on-error: true
         working-directory: terraform
         shell: bash
         run: |
           set -euo pipefail
           terraform plan -input=false -out=tfplan \
             -var "ami_id=${{ steps.ami_id.outputs.ami_id }}"
+
+      - name: Terraform apply - launch disposable validation VM
+        if: vars.RUN_TERRAFORM_VALIDATION == 'true' && steps.terraform_plan.outcome == 'success'
+        id: terraform_apply
+        working-directory: terraform
+        shell: bash
+        run: |
+          set -euo pipefail
           terraform apply -input=false tfplan
 
       - name: Verify EC2 instance status checks
@@ -199,7 +213,7 @@ jobs:
           echo "EC2 system and instance status checks passed for $instance_id."
 
       - name: Terraform destroy disposable validation VM
-        if: always() && steps.terraform_init.outcome == 'success' && steps.terraform_apply.outcome != 'skipped'
+        if: always() && steps.terraform_apply.outcome != 'skipped' && steps.terraform_init.outcome == 'success'
         working-directory: terraform
         shell: bash
         run: |
