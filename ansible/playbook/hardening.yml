@@ -468,10 +468,16 @@
     # STEP 6: AIDE (File Integrity Monitoring)
     # ==========================================================
 
+    # aide-common is installed explicitly (manual install) so that a later
+    # "autoremove" cannot delete it, and without recommends so that the Postfix
+    # mail server (a recommended MTA) is never pulled in.
     - name: Install AIDE
       ansible.builtin.apt:
-        name: aide
+        name:
+          - aide
+          - aide-common
         state: present
+        install_recommends: false
         update_cache: true
 
     - name: Ensure AIDE log directory exists
@@ -669,6 +675,18 @@
         state: absent
         purge: true
         autoremove: true
+
+    - name: Verify AIDE configuration survived package removal
+      ansible.builtin.stat:
+        path: /etc/aide/aide.conf
+      register: aide_conf_after_cleanup
+
+    - name: Fail early if AIDE was removed together with the MTA
+      ansible.builtin.assert:
+        that:
+          - aide_conf_after_cleanup.stat.exists
+          - aide_conf_after_cleanup.stat.size > 0
+        fail_msg: "/etc/aide/aide.conf is missing after removing postfix/ufw; aide-common was removed as a dependency."
 
     - name: Install nftables firewall
       ansible.builtin.apt:

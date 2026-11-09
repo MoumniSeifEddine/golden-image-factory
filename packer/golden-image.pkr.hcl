@@ -215,7 +215,7 @@ build {
 
       "sudo apt-get update",
 
-      "sudo apt-get install -y wget curl gnupg",
+      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y wget curl gnupg",
 
       "sudo install -d -m 0755 /etc/apt/keyrings",
       "curl -fsSL https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/trivy.gpg",
@@ -224,7 +224,7 @@ build {
 
       "sudo apt-get update",
 
-      "sudo apt-get install -y trivy",
+      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y trivy",
 
       "trivy --version"
     ]
@@ -307,17 +307,22 @@ build {
     execute_command = "/bin/bash '{{ .Path }}'"
     inline = [
       "set -euxo pipefail",
-      "sudo apt-get purge -y trivy",
+      "sudo DEBIAN_FRONTEND=noninteractive apt-get purge -y trivy",
       "sudo rm -f /etc/apt/sources.list.d/trivy.list /etc/apt/keyrings/trivy.gpg",
       "sudo rm -rf /root/.cache/trivy",
       "sudo apt-get autoremove -y",
       "sudo apt-get clean",
-      "if [ ! -s /etc/aide/aide.conf ]; then echo 'AIDE config missing; restoring aide-common conffiles'; sudo apt-get install --reinstall -y -o Dpkg::Options::=--force-confmiss aide-common; fi",
+      "if [ ! -s /etc/aide/aide.conf ]; then echo 'AIDE config missing; restoring aide-common conffiles'; sudo DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y --no-install-recommends -o Dpkg::Options::=--force-confmiss aide-common </dev/null; fi",
       "sudo test -s /etc/aide/aide.conf",
       "sudo aide --config=/etc/aide/aide.conf --init",
       "sudo test -s /var/lib/aide/aide.db.new",
       "sudo install -o root -g root -m 0600 /var/lib/aide/aide.db.new /var/lib/aide/aide.db",
-      "sudo aide --config=/etc/aide/aide.conf --check"
+      "set +e",
+      "sudo aide --config=/etc/aide/aide.conf --check",
+      "AIDE_RC=$?",
+      "set -e",
+      "echo \"AIDE check exit code: $AIDE_RC (1-7 = differences found, >=14 = error)\"",
+      "if [ \"$AIDE_RC\" -ge 14 ]; then echo 'ERROR: AIDE check failed to run'; exit \"$AIDE_RC\"; fi"
     ]
   }
 
