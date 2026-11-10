@@ -78,7 +78,11 @@ jobs:
       - name: Initialize Packer plugins
         working-directory: packer
         shell: bash
-        run: packer init .
+        env:
+          PACKER_PLUGIN_API_TOKEN: ${{ secrets.PACKER_PLUGIN_API_TOKEN }}
+        run: |
+          set -euo pipefail 
+          packer init .
 
       - name: Validate Packer template
         working-directory: packer
