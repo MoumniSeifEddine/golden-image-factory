@@ -22,7 +22,10 @@ Only AWS AMI output is implemented. Azure image builds, a separate lint job, and
 - GitHub repository with Actions enabled.
 - AWS credentials stored as repository secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN` (the current AWS Academy workflow uses temporary credentials).
 - Permissions for the Packer EC2/AMI/EBS operations and Terraform test-instance lifecycle. AWS Academy policies may deny some of these operations.
-- Optional GitHub secret `GRUB_PASSWORD_HASH` if GRUB interactive authentication is required. Generate a PBKDF2 hash with `grub-mkpasswd-pbkdf2` on a trusted machine and store only the resulting `grub.pbkdf2.sha512...` value as the secret. No plaintext/default password is embedded in source. If the secret is absent, GRUB authentication is skipped; set the secret before enforcing a policy that requires bootloader authentication.
+- Required GitHub secret `GRUB_PASSWORD_HASH`. Generate a PBKDF2 hash with `grub-mkpasswd-pbkdf2` on a trusted machine and store only the resulting `grub.pbkdf2.sha512...` value as the secret. No plaintext/default password is embedded in source. The workflow fails early if this secret is absent or malformed, rather than silently producing an image that fails the High-severity UEFI bootloader-password rule.
+- Optional GitHub Actions repository variable `REMOTE_SYSLOG_HOST` and `REMOTE_SYSLOG_PORT` (default `514`) for an organisation-approved remote syslog collector. If no approved endpoint is provided, remote forwarding remains deliberately unconfigured and is reported as an environmental/policy dependency.
+
+To create the required GRUB secret, run `grub-mkpasswd-pbkdf2` on a trusted Linux/WSL machine (install `grub-common` first if needed), enter a unique strong password, and copy the generated `grub.pbkdf2.sha512...` hash into **GitHub → Settings → Secrets and variables → Actions → New repository secret** with the exact name `GRUB_PASSWORD_HASH`. Never paste the plaintext password or hash into the repository or chat.
 
 Packer discovers the build runner's public IP and restricts its temporary SSH security-group ingress to that address rather than opening port 22 to `0.0.0.0/0`.
 
@@ -36,7 +39,7 @@ The build also needs the EC2/EBS permissions required to create and tag the temp
 
 ## Evidence artefacts
 
-The `golden-image-build-evidence` artifact contains the Packer manifest, AMI ID, OpenSCAP HTML/ARF, Trivy JSON and Packer output log when those files exist. Scan reports are downloaded to the runner and removed from the guest before the AMI snapshot. The Trivy and Ansible build tools are removed before image finalisation; OpenSCAP remains available for future local compliance checks. The AIDE baseline is created after Trivy is removed and before the final OpenSCAP assessment.
+The `golden-image-build-evidence` artifact contains the Packer manifest, AMI ID, OpenSCAP HTML/ARF, the complete Trivy JSON report, a separate fixable CRITICAL/HIGH Trivy report (`--ignore-unfixed`), and the Packer output log when those files exist. Scan reports are downloaded to the runner and removed from the guest before the AMI snapshot. The Trivy and Ansible build tools are removed before image finalisation; OpenSCAP remains available for future local compliance checks. The AIDE baseline is created after Trivy is removed and before the final OpenSCAP assessment.
 
 ## Cleanup
 
@@ -55,6 +58,9 @@ The script deregisters only images beyond the retention count and deletes their 
 - The build host firewall uses nftables with default-deny inbound policy and permits SSH; Packer restricts the temporary AWS security group to the build host public IP. The final deployment security group must still enforce the intended management-source policy.
 - `/tmp` and `/dev/shm` are mounted with restrictive execution and device options; `/tmp` uses a bounded 512 MiB tmpfs.
 - The Trivy repository uses a dedicated APT keyring and `signed-by`, not deprecated `apt-key`.
+- A final APT update/full-upgrade/autoremove pass runs after hardening dependencies are installed. Ansible is then run a second time to reapply security configuration after package post-install scripts, before the Trivy filesystem scan, reducing findings caused by stale package versions. It does not guarantee that every CVE has an available Ubuntu fix.
+- Every generated audit `.rules` file is explicitly set to `root:root 0640`; ordinary log files receive restrictive `0640` modes while accounting-log ownership and write permissions are preserved.
+- The effective SSH daemon crypto configuration, generated GRUB AppArmor/password entries, nftables syntax and service enablement, and runtime reverse-path-filter values are checked during provisioning.
 - Vulnerability findings are currently recorded in JSON without failing the image build. A severity gate should be enabled only after a documented exception/remediation policy is agreed.
 - OpenSCAP rule failures are retained as assessment findings. Scanner execution errors and missing report files fail the build.
 - Ubuntu's root account remains locked; do not set a reusable root password merely to satisfy a benchmark check. Administrative access is expected through the `ubuntu` account and sudo.

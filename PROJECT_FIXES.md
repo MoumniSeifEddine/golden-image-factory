@@ -13,7 +13,7 @@ This file records the changes made during the project hardening pass. It is not 
 - Pinned the AWS Terraform provider to 5.100.0, the version observed in the supplied Terraform init log.
 - Added workflow concurrency protection and a 90-minute job timeout.
 - Changed Trivy's APT key installation from deprecated `apt-key` to a dedicated keyring with `signed-by`.
-- Changed Trivy output to machine-readable JSON containing CRITICAL, HIGH and MEDIUM findings. The scan remains explicitly report-only until a vulnerability exception/remediation policy is agreed; findings are not falsely described as a clean scan.
+- Changed Trivy output to machine-readable JSON containing CRITICAL, HIGH and MEDIUM findings, plus a second CRITICAL/HIGH report limited to findings with an available fix (`--ignore-unfixed`). The scans remain report-only until a vulnerability exception/remediation policy is agreed; findings are not falsely described as a clean scan.
 - Removed `|| true` from OpenSCAP execution. Exit code 2 (completed evaluation with rule failures/unknowns) is retained as report evidence; operational errors and missing reports fail the build.
 - Uploads the Packer manifest, AMI ID, OpenSCAP HTML/ARF, Trivy JSON and build log as CI evidence.
 
@@ -22,23 +22,23 @@ This file records the changes made during the project hardening pass. It is not 
 - Restricted Packer's temporary SSH security-group ingress to the Packer runner's detected public IP instead of `0.0.0.0/0`.
 - Requires IMDSv2 on the temporary build instance.
 - Encrypts the Packer build root EBS volume at launch, avoiding a separate post-build AMI copy/encryption step.
-- Applies OS package upgrades before hardening and assessment.
+- Applies OS package upgrades before hardening and performs a final `apt-get full-upgrade`/autoremove pass after hardening dependencies are installed, then reruns the hardening playbook before vulnerability scanning so package post-install scripts cannot silently undo controls.
 - Runs Ansible from an isolated Python virtual environment pinned to Ansible 10.7.0, stages its playbook under `/var/tmp` (so the hardened no-exec `/tmp` mount does not break provisioning), and removes the build-only environment.
 - Consolidated SSH policy into a validated early-loaded OpenSSH drop-in: public-key authentication only, a dedicated `ssh-users` access group, root/password login disabled, hardened ciphers/MACs/key exchange, connection limits, forwarding restrictions and a login banner.
 - Configured PAM faillock in the actual `common-auth` stack rather than only writing `faillock.conf`.
 - Connected `pam_pwquality` and `pam_pwhistory` to the active `common-password` stack and made `pam_unix` consume the checked password token.
 - Retained Ubuntu's modern yescrypt password hashing rather than downgrading to SHA-512 solely to satisfy an older compliance check. The supplied SSG profile may continue to flag its SHA-512-specific rule; the next scan must confirm this.
 - Added sudo command logging and zero sudo timestamp reuse.
-- Added baseline audit rules and restrictive permissions.
+- Added baseline audit rules and explicitly enforces `root:root 0640` on every generated `/etc/audit/rules.d/*.rules` file before loading them.
 - Added local/remote login banners, session timeout, account inactivity defaults and an empty `sugroup` restriction for `su`.
-- Added persistent/compressed journald configuration.
+- Added persistent/compressed journald configuration. Remote syslog forwarding is now configurable only when an approved collector hostname/IP is supplied.
 - Added nftables with default-deny inbound policy, allowing loopback, established traffic, ICMP and SSH. The AWS security group remains responsible for restricting the SSH source at the network boundary.
 - Mounted `/tmp` as a bounded 512 MiB `tmpfs` with `nosuid,nodev,noexec`; hardened `/dev/shm` similarly.
-- Added IPv6 sysctl hardening, kernel-module restrictions, core-dump limits and cron permission controls.
-- Removed unused UFW and Postfix packages.
+- Added IPv6 sysctl hardening, reverse-path filtering on every detected IPv4 interface, kernel-module restrictions, core-dump limits and cron permission controls.
+- Removed unused UFW. Postfix is retained and restricted to loopback because the installed Ubuntu AIDE package depends on an MTA.
 - Added AIDE monitoring entries for audit tools and initialise/test the AIDE database after Trivy is removed and before the final OpenSCAP assessment.
 - Scan reports and temporary SCAP content are downloaded to the CI runner and removed from the guest before the AMI snapshot. Trivy and Ansible build-only tooling are not retained in the image.
-- GRUB no longer uses a predictable hardcoded password. If bootloader authentication is required, the pipeline accepts a precomputed PBKDF2 hash through the protected `GRUB_PASSWORD_HASH` GitHub secret. If it is not configured, the GRUB password tasks are skipped.
+- GRUB no longer uses a predictable hardcoded password. The build now requires a precomputed PBKDF2 hash through the protected `GRUB_PASSWORD_HASH` GitHub secret and fails early if it is missing or malformed. The playbook verifies that the generated GRUB configuration contains the password and AppArmor parameters.
 
 ### Terraform and lifecycle
 
@@ -58,16 +58,21 @@ Required by the current AWS Academy credential workflow:
 - `AWS_SECRET_ACCESS_KEY`
 - `AWS_SESSION_TOKEN`
 
-Optional:
+Required:
 
-- `GRUB_PASSWORD_HASH` — a precomputed `grub.pbkdf2.sha512...` hash generated on a trusted machine with `grub-mkpasswd-pbkdf2`. Do not store the plaintext password in the repository.
+- `GRUB_PASSWORD_HASH` — a precomputed `grub.pbkdf2.sha512...` hash generated on a trusted machine with `grub-mkpasswd-pbkdf2`. Store only the hash as a GitHub secret; never store the plaintext password in the repository.
+
+Optional repository variables:
+
+- `REMOTE_SYSLOG_HOST` — approved remote syslog collector hostname or IPv4 address.
+- `REMOTE_SYSLOG_PORT` — TCP port, default `514`.
 
 ## Important behaviour and exceptions
 
 - Trivy findings are collected as evidence; the current build is not blocked by the number of CVEs. A strict severity gate should be introduced only after the findings have been triaged and an exception policy exists.
 - OpenSCAP rule failures do not automatically fail Packer, because the purpose is to produce and inspect a compliance report. OpenSCAP execution errors and absent reports do fail the build.
 - Ubuntu's root account remains locked; the CIS check requiring a configured root password is intentionally not “fixed” by enabling a remote root password. Root SSH login remains disabled and administrative access is expected through sudo.
-- No remote syslog destination is invented. The systemd journal is made persistent/compressed and the receiver package is installed, but remote log forwarding still requires an organisation-approved collector endpoint.
+- No remote syslog destination is invented. The systemd journal is made persistent/compressed. `rsyslog` and TCP forwarding are configured only when an organisation-approved collector is supplied through `REMOTE_SYSLOG_HOST`.
 - The OpenSCAP check requiring a configured root password is intentionally not satisfied: the Ubuntu cloud image keeps the root account locked, root SSH is disabled, and administrative access uses the `ubuntu` account with sudo. Do not enable a reusable root password just to increase the benchmark score.
 - `AllowGroups ssh-users` means any additional administrator account must be explicitly added to that group.
 - The Terraform test validates EC2 system/instance status checks only. It does not yet prove SSH login, application readiness or every hardening control after boot.
@@ -77,9 +82,11 @@ Optional:
 
 - YAML parsing of the GitHub Actions workflow and Ansible playbook.
 - Structural checks on Ansible task/handler definitions and duplicate task names.
-- Shell syntax check of `scripts/cleanup.sh` and each GitHub Actions `run` block.
-- HCL delimiter/quote checks for the Packer template and Terraform files.
-- Secret-hygiene check confirming the old predictable GRUB password literal is absent.
+- Shell syntax checks of every GitHub Actions `run` block and `scripts/cleanup.sh`.
+- Static inspection of the Packer HCL changes and secret references.
+- Secret-hygiene check confirming no predictable GRUB password literal is present in active source files.
+
+The environment does not contain Ansible, Packer or Terraform binaries, so their native syntax/validation commands have not been run here.
 
 ## Validation still required
 

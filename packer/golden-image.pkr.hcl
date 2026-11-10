@@ -19,9 +19,21 @@ variable "ami_name_prefix" {
 
 variable "grub_password_hash" {
   type        = string
-  description = "Optional precomputed GRUB PBKDF2 hash supplied through PKR_VAR_grub_password_hash / a CI secret."
+  description = "Required precomputed GRUB PBKDF2 hash supplied through PKR_VAR_grub_password_hash / a CI secret."
   default     = ""
   sensitive   = true
+}
+
+variable "remote_syslog_host" {
+  type        = string
+  description = "Optional organisation-approved remote syslog collector hostname or IP. Leave empty to disable forwarding."
+  default     = ""
+}
+
+variable "remote_syslog_port" {
+  type        = number
+  description = "Remote syslog TCP port."
+  default     = 514
 }
 
 
@@ -189,19 +201,15 @@ build {
     extra_arguments = [
       "--verbose",
       "--extra-vars",
-      "grub_password_hash=${var.grub_password_hash}"
+      "grub_password_hash=${var.grub_password_hash}",
+      "--extra-vars",
+      "remote_syslog_host=${var.remote_syslog_host} remote_syslog_port=${var.remote_syslog_port}"
     ]
   }
 
-  provisioner "shell" {
-    inline_shebang = "/bin/bash -e"
-    execute_command = "/bin/bash '{{ .Path }}'"
-    inline = [
-      "set -euxo pipefail",
-      "sudo rm -rf /opt/ansible-venv"
-    ]
-  }
-
+  # Keep the isolated Ansible environment until after the final package upgrade.
+  # A second idempotent playbook pass below reapplies security configuration in
+  # case package post-install scripts changed service/configuration state.
 
   # ==========================================================
   # STEP 3: Install Trivy via official APT repository
@@ -226,10 +234,45 @@ build {
 
       "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y trivy",
 
-      "trivy --version"
+      "trivy --version",
+
+      # Refresh and upgrade after all hardening dependencies have been installed,
+      # so Trivy evaluates the final package inventory rather than an earlier state.
+      "sudo apt-get update",
+      "sudo DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y",
+      "sudo DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y",
+      "sudo apt-get clean"
     ]
   }
 
+  # Reapply the hardening after package upgrades and before scanning/finalising.
+  provisioner "ansible-local" {
+    command                 = "/opt/ansible-venv/bin/ansible-playbook"
+    staging_directory      = "/var/tmp/packer-provisioner-ansible-local-final"
+    clean_staging_directory = true
+    playbook_file           = "../ansible/playbook/hardening.yml"
+    extra_arguments = [
+      "--verbose",
+      "--extra-vars",
+      "grub_password_hash=${var.grub_password_hash}",
+      "--extra-vars",
+      "remote_syslog_host=${var.remote_syslog_host} remote_syslog_port=${var.remote_syslog_port}"
+    ]
+  }
+
+  provisioner "shell" {
+    inline_shebang = "/bin/bash -e"
+    execute_command = "/bin/bash '{{ .Path }}'"
+    inline = [
+      "set -euxo pipefail",
+      "sudo sshd -t",
+      "sudo update-grub",
+      "sudo grep -q 'password_pbkdf2' /boot/grub/grub.cfg",
+      "sudo grep -Eq '(^| )apparmor=1( |$)' /boot/grub/grub.cfg",
+      "sudo systemctl is-enabled nftables",
+      "sudo rm -rf /opt/ansible-venv"
+    ]
+  }
 
   # ==========================================================
   # STEP 4: Run Trivy vulnerability scan
@@ -245,7 +288,9 @@ build {
 
       "sudo trivy fs --scanners vuln --severity CRITICAL,HIGH,MEDIUM --exit-code 0 --format json --output /tmp/trivy-results.json --no-progress /",
       "sudo chmod 0644 /tmp/trivy-results.json",
-      "echo 'Trivy scan completed; review trivy-results.json for findings (report-only policy).'"
+      "sudo trivy fs --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 0 --format json --output /tmp/trivy-fixable-results.json --no-progress /",
+      "sudo chmod 0644 /tmp/trivy-fixable-results.json",
+      "echo 'Trivy scans completed: full findings and a separate fixable CRITICAL/HIGH subset are preserved.'"
     ]
   }
 
@@ -255,6 +300,12 @@ build {
     direction   = "download"
     source      = "/tmp/trivy-results.json"
     destination = "trivy-results.json"
+  }
+
+  provisioner "file" {
+    direction   = "download"
+    source      = "/tmp/trivy-fixable-results.json"
+    destination = "trivy-fixable-results.json"
   }
 
   # ==========================================================
@@ -321,8 +372,8 @@ build {
       "sudo aide --config=/etc/aide/aide.conf --check",
       "AIDE_RC=$?",
       "set -e",
-      "echo \"AIDE check exit code: $AIDE_RC (1-7 = differences found, >=14 = error)\"",
-      "if [ \"$AIDE_RC\" -ge 14 ]; then echo 'ERROR: AIDE check failed to run'; exit \"$AIDE_RC\"; fi"
+      "echo \"AIDE check exit code: $AIDE_RC\"",
+      "if [ \"$AIDE_RC\" -ne 0 ]; then echo 'ERROR: AIDE integrity check reported differences or an execution error'; exit \"$AIDE_RC\"; fi"
     ]
   }
 
@@ -390,7 +441,7 @@ build {
     inline = [
       "set -euxo pipefail",
       "OSCAP_RC=$(cat /tmp/oscap_exit_code)",
-      "sudo rm -rf /tmp/scap-content /tmp/scap-security-guide.zip /tmp/trivy-results.json /tmp/arf.xml /tmp/compliance_report.html /tmp/oscap_exit_code",
+      "sudo rm -rf /tmp/scap-content /tmp/scap-security-guide.zip /tmp/trivy-results.json /tmp/trivy-fixable-results.json /tmp/arf.xml /tmp/compliance_report.html /tmp/oscap_exit_code",
       "if [ \"$OSCAP_RC\" -ne 0 ] && [ \"$OSCAP_RC\" -ne 2 ]; then echo \"ERROR: OpenSCAP execution error (exit $OSCAP_RC); reports were downloaded for diagnosis.\"; exit \"$OSCAP_RC\"; fi"
     ]
   }

@@ -85,12 +85,30 @@ jobs:
         shell: bash
         run: packer validate golden-image.pkr.hcl
 
+      - name: Validate required GRUB password secret
+        shell: bash
+        env:
+          GRUB_PASSWORD_HASH: ${{ secrets.GRUB_PASSWORD_HASH }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GRUB_PASSWORD_HASH:-}" ]]; then
+            echo "::error::Missing GRUB_PASSWORD_HASH. Generate a PBKDF2 hash with grub-mkpasswd-pbkdf2 and add it as a GitHub Actions secret."
+            exit 1
+          fi
+          if [[ ! "${GRUB_PASSWORD_HASH}" =~ ^grub\.pbkdf2\.sha512\.[0-9]+\..+$ ]]; then
+            echo "::error::GRUB_PASSWORD_HASH is not in the expected grub.pbkdf2.sha512 format."
+            exit 1
+          fi
+          echo "GRUB password hash is present and has the expected format."
+
       - name: Build AMI with Packer
         id: packer_build
         working-directory: packer
         shell: bash
         env:
           PKR_VAR_grub_password_hash: ${{ secrets.GRUB_PASSWORD_HASH }}
+          PKR_VAR_remote_syslog_host: ${{ vars.REMOTE_SYSLOG_HOST }}
+          PKR_VAR_remote_syslog_port: ${{ vars.REMOTE_SYSLOG_PORT || '514' }}
         run: |
           set -euo pipefail
           packer build golden-image.pkr.hcl 2>&1 | tee packer_output.txt
@@ -156,6 +174,15 @@ jobs:
                   counts = Counter(v.get("Severity", "UNKNOWN") for v in (result.get("Vulnerabilities") or []))
                   summary.append(f"- {result.get('Target', 'unknown target')}: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
 
+          fixable = Path("packer/trivy-fixable-results.json")
+          if fixable.is_file():
+              data = json.loads(fixable.read_text(encoding="utf-8"))
+              counts = Counter()
+              for result in data.get("Results") or []:
+                  counts.update(v.get("Severity", "UNKNOWN") for v in (result.get("Vulnerabilities") or []))
+              summary.append("### Trivy fixable CRITICAL/HIGH subset (--ignore-unfixed)")
+              summary.extend(f"- {severity}: {count}" for severity, count in sorted(counts.items()))
+
           print("\n".join(summary))
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
               handle.write("\n".join(summary) + "\n")
@@ -174,6 +201,7 @@ jobs:
             packer/compliance_report.html
             packer/arf.xml
             packer/trivy-results.json
+            packer/trivy-fixable-results.json
             packer/oscap_exit_code.txt
             packer/packer_output.txt
 

@@ -4,6 +4,10 @@
   become: true
   gather_facts: true
 
+  vars:
+    remote_syslog_host: ""
+    remote_syslog_port: 514
+
   tasks:
 
     # ==========================================================
@@ -79,6 +83,20 @@
       ansible.builtin.command:
         cmd: /usr/sbin/sshd -t
       changed_when: false
+
+    - name: Read effective OpenSSH server configuration
+      ansible.builtin.command:
+        cmd: /usr/sbin/sshd -T
+      register: effective_sshd_config
+      changed_when: false
+
+    - name: Verify SSH cryptographic directives are active
+      ansible.builtin.assert:
+        that:
+          - "'ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr' in effective_sshd_config.stdout"
+          - "'kexalgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group14-sha256' in effective_sshd_config.stdout"
+          - "'macs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512,hmac-sha2-256' in effective_sshd_config.stdout"
+        fail_msg: "The effective SSH crypto policy differs from the hardened configuration."
 
     # ==========================================================
     # STEP 2: PASSWORD POLICY
@@ -188,7 +206,7 @@
     - name: Enable PAM faillock pre-authentication check
       ansible.builtin.lineinfile:
         path: /etc/pam.d/common-auth
-        line: 'auth required pam_faillock.so preauth silent'
+        line: 'auth required pam_faillock.so preauth silent deny=5 fail_interval=900 unlock_time=900'
         insertafter: BOF
         state: present
         backup: true
@@ -199,8 +217,8 @@
         marker: "# {mark} GOLDEN IMAGE FACTORY FAILLOCK"
         insertafter: '^auth \[success=1 default=ignore\] pam_unix\.so'
         block: |
-          auth [default=die] pam_faillock.so authfail
-          auth sufficient pam_faillock.so authsucc
+          auth [default=die] pam_faillock.so authfail deny=5 fail_interval=900 unlock_time=900
+          auth sufficient pam_faillock.so authsucc deny=5 fail_interval=900 unlock_time=900
         backup: true
 
     - name: Enable PAM password quality checks in the password stack
@@ -401,6 +419,24 @@
           -w /etc/audit/ -p wa -k auditconfig
           -w /var/log/audit/ -p wa -k auditlog
 
+    - name: Find audit rule files for explicit permission enforcement
+      ansible.builtin.find:
+        paths: /etc/audit/rules.d
+        patterns: "*.rules"
+        file_type: file
+        recurse: false
+      register: audit_rule_files
+
+    - name: Set secure ownership and permissions on every audit rule file
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: root
+        group: root
+        mode: '0640'
+      loop: "{{ audit_rule_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+
     - name: Load audit rules
       ansible.builtin.command:
         cmd: augenrules --load
@@ -464,6 +500,39 @@
           Storage=persistent
       notify: Restart systemd-journald
 
+    - name: Validate approved remote syslog endpoint parameters
+      ansible.builtin.assert:
+        that:
+          - remote_syslog_host is match('^[A-Za-z0-9.-]+$')
+          - remote_syslog_port | int >= 1
+          - remote_syslog_port | int <= 65535
+        fail_msg: "REMOTE_SYSLOG_HOST must be a hostname or IPv4 address and REMOTE_SYSLOG_PORT must be between 1 and 65535."
+      when: remote_syslog_host | default('') | length > 0
+
+    - name: Install rsyslog for approved remote log forwarding
+      ansible.builtin.apt:
+        name: rsyslog
+        state: present
+        update_cache: true
+      when: remote_syslog_host | default('') | length > 0
+
+    - name: Configure TCP forwarding to the approved remote log collector
+      ansible.builtin.copy:
+        dest: /etc/rsyslog.d/60-golden-image-remote.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: "*.* @@{{ remote_syslog_host }}:{{ remote_syslog_port | default(514) }}"
+      when: remote_syslog_host | default('') | length > 0
+      notify: Restart rsyslog
+
+    - name: Enable rsyslog when remote forwarding is configured
+      ansible.builtin.systemd:
+        name: rsyslog
+        enabled: true
+        state: started
+      when: remote_syslog_host | default('') | length > 0
+
     # ==========================================================
     # STEP 6: AIDE (File Integrity Monitoring)
     # ==========================================================
@@ -504,6 +573,14 @@
         owner: root
         group: root
         mode: '0750'
+
+    - name: Ensure AIDE database directory exists
+      ansible.builtin.file:
+        path: /var/lib/aide
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
 
     - name: Exclude ephemeral temporary files from AIDE monitoring
       ansible.builtin.blockinfile:
@@ -547,12 +624,15 @@
 
     # Never generate or store a plaintext GRUB password in the image build.
     # Supply a precomputed PBKDF2 hash through a protected CI secret.
-    - name: Validate supplied GRUB password hash format
+    - name: Require a protected GRUB password hash for the hardened image
       ansible.builtin.assert:
         that:
-          - grub_password_hash is match('^grub\.pbkdf2\.sha512\.[0-9]+\..+$')
-        fail_msg: "GRUB_PASSWORD_HASH must contain a grub.pbkdf2.sha512 hash."
-      when: grub_password_hash | default('') | length > 0
+          - grub_password_hash | default('') | length > 0
+          - (grub_password_hash | default('')) is match('^grub\.pbkdf2\.sha512\.[0-9]+\..+$')
+        fail_msg: >-
+          Set the GitHub Actions secret GRUB_PASSWORD_HASH to a valid
+          grub.pbkdf2.sha512 hash generated with grub-mkpasswd-pbkdf2.
+          The image will not be built with an unprotected UEFI bootloader.
       no_log: true
 
     - name: Configure GRUB superuser and password hash
@@ -567,7 +647,6 @@
         group: root
         mode: '0755'
       no_log: true
-      when: grub_password_hash | default('') | length > 0
       register: grub_password_configured
 
     - name: Enable AppArmor kernel parameter in GRUB
@@ -593,6 +672,16 @@
         cmd: update-grub
       when: grub_apparmor_parameter.changed or grub_apparmor_security.changed or (grub_password_configured.changed | default(false))
       changed_when: true
+
+    - name: Verify generated GRUB configuration contains AppArmor parameters
+      ansible.builtin.command:
+        cmd: grep -Eq '(^| )apparmor=1( |$)' /boot/grub/grub.cfg
+      changed_when: false
+
+    - name: Verify generated GRUB configuration contains UEFI password protection
+      ansible.builtin.command:
+        cmd: grep -q 'password_pbkdf2' /boot/grub/grub.cfg
+      changed_when: false
 
     - name: Restrict GRUB custom configuration permissions
       ansible.builtin.file:
@@ -745,6 +834,18 @@
         enabled: true
         state: started
 
+    - name: Verify nftables configuration is syntactically valid
+      ansible.builtin.command:
+        cmd: /usr/sbin/nft -c -f /etc/nftables.conf
+      changed_when: false
+
+    - name: Verify nftables is enabled for boot
+      ansible.builtin.command:
+        cmd: systemctl is-enabled nftables
+      register: nftables_enabled_check
+      changed_when: false
+      failed_when: nftables_enabled_check.stdout | trim != 'enabled'
+
     - name: Set local system log directory permissions
       ansible.builtin.file:
         path: /var/log
@@ -752,6 +853,38 @@
         owner: root
         group: root
         mode: '0755'
+
+    - name: Find ordinary log files requiring restrictive permissions
+      ansible.builtin.find:
+        paths: /var/log
+        file_type: file
+        recurse: true
+        excludes:
+          - wtmp
+          - btmp
+          - lastlog
+          - faillog
+      register: ordinary_log_files
+
+    - name: Restrict ordinary log file permissions without changing service ownership
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        mode: '0640'
+      loop: "{{ ordinary_log_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Preserve accounting log permissions for system services
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: root
+        group: utmp
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: '/var/log/wtmp', mode: '0664' }
+        - { path: '/var/log/btmp', mode: '0660' }
+        - { path: '/var/log/lastlog', mode: '0664' }
+      when: item.path is file
 
     - name: Set SSH daemon configuration permissions
       ansible.builtin.file:
@@ -782,6 +915,16 @@
         - { name: 'net.ipv4.conf.all.secure_redirects', value: '0' }
         - { name: 'net.ipv4.conf.default.secure_redirects', value: '0' }
         - { name: 'net.ipv4.ip_forward', value: '0' }
+
+    - name: Enable reverse-path filtering on every detected IPv4 interface
+      ansible.builtin.sysctl:
+        name: "net.ipv4.conf.{{ item }}.rp_filter"
+        value: '1'
+        state: present
+        reload: true
+        sysctl_file: /etc/sysctl.d/99-z-golden-image-hardening.conf
+      loop: "{{ ansible_facts.interfaces | difference(['lo']) }}"
+      when: ansible_facts.interfaces is defined
 
     - name: Apply additional sysctl parameters
       ansible.builtin.sysctl:
@@ -856,6 +999,15 @@
         - { name: 'net.ipv4.conf.all.accept_source_route', value: '0' }
         - { name: 'net.ipv4.conf.default.accept_source_route', value: '0' }
 
+    - name: Verify reverse-path filtering is active on every detected IPv4 interface
+      ansible.builtin.command:
+        cmd: "sysctl -n net.ipv4.conf.{{ item }}.rp_filter"
+      register: interface_rpf_check
+      changed_when: false
+      failed_when: interface_rpf_check.stdout | trim != '1'
+      loop: "{{ ansible_facts.interfaces | difference(['lo']) }}"
+      when: ansible_facts.interfaces is defined
+
     - name: Disable unused kernel modules
       ansible.builtin.copy:
         dest: /etc/modprobe.d/99-golden-image-blacklist.conf
@@ -890,6 +1042,11 @@
     - name: Restart systemd-journald
       ansible.builtin.service:
         name: systemd-journald
+        state: restarted
+
+    - name: Restart rsyslog
+      ansible.builtin.service:
+        name: rsyslog
         state: restarted
 
     - name: Restart SSH
