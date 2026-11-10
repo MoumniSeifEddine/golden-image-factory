@@ -203,7 +203,9 @@ build {
       "--extra-vars",
       "grub_password_hash=${var.grub_password_hash}",
       "--extra-vars",
-      "remote_syslog_host=${var.remote_syslog_host} remote_syslog_port=${var.remote_syslog_port}"
+      "remote_syslog_host=${var.remote_syslog_host}",
+      "--extra-vars",
+      "remote_syslog_port=${var.remote_syslog_port}"
     ]
   }
 
