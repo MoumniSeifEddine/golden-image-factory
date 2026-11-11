@@ -266,7 +266,8 @@ build {
       "sudo sshd -t",
       "sudo update-grub",
       "sudo grep -q 'password_pbkdf2' /boot/grub/grub.cfg",
-      "sudo grep -Eq '(^| )apparmor=1( |$)' /boot/grub/grub.cfg",
+      "sudo grep -Eq '^[[:space:]]*linux(efi)?[[:space:]].*[[:space:]]apparmor=1([[:space:]]|$)' /boot/grub/grub.cfg",
+      "sudo grep -Eq '^[[:space:]]*linux(efi)?[[:space:]].*[[:space:]]security=apparmor([[:space:]]|$)' /boot/grub/grub.cfg",
       "sudo systemctl is-enabled nftables",
       "sudo rm -rf /opt/ansible-venv"
     ]

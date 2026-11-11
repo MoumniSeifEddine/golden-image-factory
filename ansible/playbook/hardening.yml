@@ -649,33 +649,34 @@
       no_log: true
       register: grub_password_configured
 
-    - name: Enable AppArmor kernel parameter in GRUB
-      ansible.builtin.lineinfile:
-        path: /etc/default/grub
-        regexp: '^(GRUB_CMDLINE_LINUX_DEFAULT=")(?![^"]*\bapparmor=1\b)([^"]*)(")$'
-        line: '\1\2 apparmor=1\3'
-        backrefs: true
-        state: present
-      register: grub_apparmor_parameter
-
-    - name: Enable AppArmor security module in GRUB
-      ansible.builtin.lineinfile:
-        path: /etc/default/grub
-        regexp: '^(GRUB_CMDLINE_LINUX_DEFAULT=")(?![^"]*\bsecurity=apparmor\b)([^"]*)(")$'
-        line: '\1\2 security=apparmor\3'
-        backrefs: true
-        state: present
-      register: grub_apparmor_security
+    # Ubuntu cloud images load files from /etc/default/grub.d after
+    # /etc/default/grub. The cloud-image drop-in can therefore override
+    # GRUB_CMDLINE_LINUX_DEFAULT. Use a late-sorted drop-in and append the
+    # AppArmor arguments to GRUB_CMDLINE_LINUX so they reach every Linux entry.
+    - name: Configure AppArmor kernel parameters in a late GRUB drop-in
+      ansible.builtin.copy:
+        dest: /etc/default/grub.d/99-golden-image-apparmor.cfg
+        content: |
+          GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX apparmor=1 security=apparmor"
+        owner: root
+        group: root
+        mode: '0644'
+      register: grub_apparmor_config
 
     - name: Regenerate GRUB configuration when settings changed
       ansible.builtin.command:
         cmd: update-grub
-      when: grub_apparmor_parameter.changed or grub_apparmor_security.changed or (grub_password_configured.changed | default(false))
+      when: grub_apparmor_config.changed or (grub_password_configured.changed | default(false))
       changed_when: true
 
-    - name: Verify generated GRUB configuration contains AppArmor parameters
+    - name: Verify generated Linux boot entries contain apparmor=1
       ansible.builtin.command:
-        cmd: grep -Eq '(^| )apparmor=1( |$)' /boot/grub/grub.cfg
+        cmd: grep -Eq '^[[:space:]]*linux(efi)?[[:space:]].*[[:space:]]apparmor=1([[:space:]]|$)' /boot/grub/grub.cfg
+      changed_when: false
+
+    - name: Verify generated Linux boot entries contain security=apparmor
+      ansible.builtin.command:
+        cmd: grep -Eq '^[[:space:]]*linux(efi)?[[:space:]].*[[:space:]]security=apparmor([[:space:]]|$)' /boot/grub/grub.cfg
       changed_when: false
 
     - name: Verify generated GRUB configuration contains UEFI password protection
