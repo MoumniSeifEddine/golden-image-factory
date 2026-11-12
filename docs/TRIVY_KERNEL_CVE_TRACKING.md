@@ -52,7 +52,7 @@ The 15 records are not 15 independent CVEs: each of the five CVEs is reported ag
 The project will:
 
 1. Keep Ubuntu 22.04 LTS and the current supported AWS kernel family.
-2. Keep the kernel image and modules; do not remove essential kernel packages to lower scanner counts.
+2. Keep the kernel image and modules; do not remove essential kernel packages to lower scanner counts. Kernel **headers** and kernel **tools** packages are not essential at runtime (they only support compiling out-of-tree modules and debugging), so they are removed from the image — see "Remediation applied" below.
 3. Keep Trivy scanning enabled and retain the full JSON report.
 4. Not suppress these CVEs or mark them as fixed.
 5. Re-check Ubuntu's `linux-aws-6.8` status weekly and whenever a new image build changes the kernel package version.
@@ -60,6 +60,20 @@ The project will:
 7. Record the tracker review date and status changes in this register.
 
 **Current disposition:** documented and monitored; not remediated. The findings remain open until an official applicable fix is available and a new scan verifies the installed package is no longer affected.
+
+## Remediation applied (12 November 2026)
+
+Trivy reported each CVE against three binary packages. Only one of them (`linux-modules-6.8.0-1069-aws`) contains kernel code that is loaded at runtime; the other two are build-time headers:
+
+| Package | Needed at runtime? | Action |
+|---|---|---|
+| `linux-modules-6.8.0-1069-aws` | Yes — loadable kernel modules | **Kept** |
+| `linux-aws-6.8-headers-6.8.0-1069` | No — C headers for compiling modules | Removed |
+| `linux-headers-6.8.0-1069-aws` | No — same | Removed |
+
+`ansible/playbook/hardening.yml` now purges the header packages and the `linux-aws` / `linux-headers-aws` meta-packages that depend on them (and, as before, the optional kernel tools packages). `linux-image-aws` is marked manually installed first, so kernel security updates keep arriving through it. The playbook asserts that no header/tools packages remain, that `linux-image-aws` and the modules package are installed, and that the running kernel image is still in `/boot`.
+
+**Expected effect on the next scan (to be confirmed by a new build, not yet claimed):** the Critical records should fall from 15 to 5 and the High records from 525 to 175. The five unique Critical CVEs remain open, because the affected code is in the kernel modules package for which Ubuntu has published no fix. Nothing is suppressed or marked as fixed.
 
 ## Monitoring
 

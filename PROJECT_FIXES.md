@@ -40,6 +40,8 @@ This file records the changes made during the project hardening pass. It is not 
 - Scan reports and temporary SCAP content are downloaded to the CI runner and removed from the guest before the AMI snapshot. Trivy and Ansible build-only tooling are not retained in the image.
 - GRUB no longer uses a predictable hardcoded password. The build now requires a precomputed PBKDF2 hash through the protected `GRUB_PASSWORD_HASH` GitHub secret and fails early if it is missing or malformed. The playbook verifies that the generated GRUB configuration contains the password and AppArmor parameters.
 
+- Removed the AWS kernel header packages (and the `linux-aws`/`linux-headers-aws` meta-packages that pull them in) in addition to the kernel tools packages. Headers are only needed to compile out-of-tree modules; removing them eliminates two of the three packages Trivy attributed the kernel CVEs to, without touching the kernel image or modules. `linux-image-aws` is kept (marked manual) so kernel updates continue. Remaining kernel CVEs stay open and documented in `docs/TRIVY_KERNEL_CVE_TRACKING.md`.
+
 ### Terraform and lifecycle
 
 - Replaced use of the default security group with a dedicated validation security group containing no inbound rules.

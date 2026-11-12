@@ -39,7 +39,7 @@ The build also needs the EC2/EBS permissions required to create and tag the temp
 
 ## Evidence artefacts
 
-The `golden-image-build-evidence` artifact contains the Packer manifest, AMI ID, OpenSCAP HTML/ARF, the complete Trivy JSON report, a separate fixable CRITICAL/HIGH Trivy report (`--ignore-unfixed`), and the Packer output log when those files exist. Scan reports are downloaded to the runner and removed from the guest before the AMI snapshot. The Trivy and Ansible build tools are removed before image finalisation; OpenSCAP remains available for future local compliance checks. The AIDE baseline is created after Trivy is removed and before the final OpenSCAP assessment.
+The `golden-image-build-evidence` artifact contains the Packer manifest, AMI ID, OpenSCAP HTML/ARF, the complete Trivy JSON report, a separate fixable CRITICAL/HIGH Trivy report (`--ignore-unfixed`), and the Packer output log when those files exist. Scan reports are downloaded to the runner and removed from the guest before the AMI snapshot. The Trivy and Ansible build tools, kernel headers and kernel tools packages are removed before image finalisation; OpenSCAP remains available for future local compliance checks. The AIDE baseline is created after Trivy is removed and before the final OpenSCAP assessment.
 
 ## Cleanup
 
@@ -75,4 +75,4 @@ Cloud build and deployment results must be taken from the current workflow run. 
 
 ## Outstanding kernel CVEs
 
-The current Ubuntu 22.04 `linux-aws-6.8` build has five outstanding Critical CVEs (15 Trivy package records across three binary packages). They are documented in [`docs/TRIVY_KERNEL_CVE_TRACKING.md`](docs/TRIVY_KERNEL_CVE_TRACKING.md). The repository includes a read-only weekly GitHub Actions monitor for the exact Ubuntu Security Tracker package row (`linux-aws-6.8`, Jammy). It does not change the kernel, build an AMI, or access AWS credentials.
+The `linux-aws-6.8` build had five outstanding Critical CVEs, reported as 15 Trivy records across three binary packages. The two header packages are now removed from the image because they contain no runtime kernel code, so the next scan is expected to show 5 Critical records (kernel modules package only) until Ubuntu publishes a fix. They are documented in [`docs/TRIVY_KERNEL_CVE_TRACKING.md`](docs/TRIVY_KERNEL_CVE_TRACKING.md). The repository includes a read-only weekly GitHub Actions monitor for the exact Ubuntu Security Tracker package row (`linux-aws-6.8`, Jammy). It does not change the kernel, build an AMI, or access AWS credentials.
