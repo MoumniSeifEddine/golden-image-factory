@@ -71,3 +71,8 @@ The script deregisters only images beyond the retention count and deletes their 
 ## Validation status
 
 Cloud build and deployment results must be taken from the current workflow run. The previously supplied evidence records a successful AMI build but a Terraform launch blocked by the AWS Academy explicit IAM deny. No claim of a successful post-hardening runtime/SSH test is made.
+
+
+## Outstanding kernel CVEs
+
+The current Ubuntu 22.04 `linux-aws-6.8` build has five outstanding Critical CVEs (15 Trivy package records across three binary packages). They are documented in [`docs/TRIVY_KERNEL_CVE_TRACKING.md`](docs/TRIVY_KERNEL_CVE_TRACKING.md). The repository includes a read-only weekly GitHub Actions monitor for the exact Ubuntu Security Tracker package row (`linux-aws-6.8`, Jammy). It does not change the kernel, build an AMI, or access AWS credentials.

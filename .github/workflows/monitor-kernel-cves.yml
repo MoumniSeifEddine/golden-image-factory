@@ -1,0 +1,41 @@
+name: Monitor Ubuntu 22.04 AWS Kernel CVEs
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ubuntu-22-04-kernel-cve-monitor
+  cancel-in-progress: false
+
+jobs:
+  check-ubuntu-tracker:
+    name: Check linux-aws-6.8 CVE status
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Self-test tracker parser
+        run: python3 scripts/check_kernel_cves.py --self-test
+
+      - name: Check Ubuntu Security Tracker
+        run: python3 scripts/check_kernel_cves.py
+
+      - name: Upload CVE status report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ubuntu-22.04-kernel-cve-status
+          if-no-files-found: ignore
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/ubuntu-cve-status.md
