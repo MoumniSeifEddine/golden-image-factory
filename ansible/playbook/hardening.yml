@@ -800,6 +800,45 @@
           - aide_conf_after_cleanup.stat.size > 0
         fail_msg: "/etc/aide/aide.conf is missing after removing ufw; aide-common was removed unexpectedly."
 
+    # ==========================================================
+    # REMOVE OPTIONAL KERNEL DIAGNOSTIC TOOLS
+    # ==========================================================
+    # The AWS kernel meta-package only recommends the versioned tools package;
+    # the kernel image and headers remain required for the AMI's AWS kernel.
+    # Remove only the optional tools binaries/common helpers, not the kernel,
+    # modules, headers, or linux-aws update meta-package.
+    - name: Discover installed optional AWS kernel diagnostic tool packages
+      ansible.builtin.shell: |
+        dpkg-query -W -f='${binary:Package}\n' 2>/dev/null |
+          grep -E '^(linux-aws-[0-9.]+-tools-[0-9].*|linux-tools-[0-9].*-aws|linux-tools-common|linux-tools-aws)$' || true
+      args:
+        executable: /bin/bash
+      register: optional_kernel_diagnostic_packages
+      changed_when: false
+
+    - name: Remove optional AWS kernel diagnostic tools
+      ansible.builtin.apt:
+        name: "{{ optional_kernel_diagnostic_packages.stdout_lines }}"
+        state: absent
+        purge: true
+        autoremove: false
+      when: optional_kernel_diagnostic_packages.stdout_lines | length > 0
+
+    - name: Verify AWS kernel update meta-package remains installed
+      ansible.builtin.command:
+        cmd: dpkg-query -W -f='${db:Status-Status}\n' linux-aws linux-image-aws
+      register: aws_kernel_meta_status
+      changed_when: false
+      failed_when: aws_kernel_meta_status.stdout_lines != ['installed', 'installed']
+
+    - name: Verify AWS kernel modules remain installed
+      ansible.builtin.shell: |
+        dpkg-query -W -f='${binary:Package}\t${db:Status-Status}\n' |
+          awk -F '\t' '$1 ~ /^linux-modules-[0-9].*-aws$/ && $2 == "installed" { found=1 } END { exit !found }'
+      args:
+        executable: /bin/bash
+      changed_when: false
+
     - name: Install nftables firewall
       ansible.builtin.apt:
         name: nftables
