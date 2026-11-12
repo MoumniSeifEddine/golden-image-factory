@@ -591,6 +591,12 @@
           !/var/tmp
           # AIDE must not monitor its own live database or the database under construction.
           !/var/lib/aide
+          # Runtime state is modified asynchronously by snapd during image provisioning and after boot.
+          # Keep snap packages and configuration monitored; exclude only the mutable snap state tree.
+          !/var/lib/snapd
+          # SSM agent logs are continuously appended while the image is being built and at runtime.
+          # Keep the SSM agent binaries and configuration monitored; exclude its volatile logs.
+          !/var/log/amazon/ssm
 
     - name: Configure AIDE monitoring for audit tools
       ansible.builtin.blockinfile:
