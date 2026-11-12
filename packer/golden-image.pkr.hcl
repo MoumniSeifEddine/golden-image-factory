@@ -364,15 +364,11 @@ build {
       "sudo apt-get clean",
       "if [ ! -s /etc/aide/aide.conf ]; then echo 'AIDE config missing; restoring aide-common conffiles'; sudo DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y --no-install-recommends -o Dpkg::Options::=--force-confmiss aide-common </dev/null; fi",
       "sudo test -s /etc/aide/aide.conf",
-      "sudo aide --config=/etc/aide/aide.conf --init",
-      "sudo test -s /var/lib/aide/aide.db.new",
-      "sudo install -o root -g root -m 0600 /var/lib/aide/aide.db.new /var/lib/aide/aide.db",
-      "set +e",
-      "sudo aide --config=/etc/aide/aide.conf --check",
-      "AIDE_RC=$?",
-      "set -e",
-      "echo \"AIDE check exit code: $AIDE_RC\"",
-      "if [ \"$AIDE_RC\" -ne 0 ]; then echo 'ERROR: AIDE integrity check reported differences or an execution error'; exit \"$AIDE_RC\"; fi"
+      # Run initialization, database installation, and verification inside one root shell.
+      # This prevents subsequent sudo invocations from changing /var/log/sudo.log
+      # between the AIDE baseline and the immediate integrity check.
+      "sudo bash -c 'set -euo pipefail; aide --config=/etc/aide/aide.conf --init; test -s /var/lib/aide/aide.db.new; install -o root -g root -m 0600 /var/lib/aide/aide.db.new /var/lib/aide/aide.db; aide --config=/etc/aide/aide.conf --check'",
+      "echo 'AIDE database initialized and immediate integrity verification passed.'"
     ]
   }
 

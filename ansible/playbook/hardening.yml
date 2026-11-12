@@ -589,6 +589,8 @@
         block: |
           !/tmp
           !/var/tmp
+          # AIDE must not monitor its own live database or the database under construction.
+          !/var/lib/aide
 
     - name: Configure AIDE monitoring for audit tools
       ansible.builtin.blockinfile:
