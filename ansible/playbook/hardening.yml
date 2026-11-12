@@ -8,6 +8,126 @@
     remote_syslog_host: ""
     remote_syslog_port: 514
 
+    # Loadable kernel modules that contain code affected by unfixed Trivy
+    # CRITICAL/HIGH kernel CVEs and that this EC2 server image does not use.
+    # See docs/TRIVY_KERNEL_CVE_COVERAGE.md for the CVE-to-module mapping.
+    # Names use underscores (modprobe treats '-' and '_' as equivalent).
+    kernel_cve_blocked_modules:
+      # CRITICAL: SMB server, NFS server, IPsec/XFRM
+      - ksmbd               # SMB server (CVE-2026-90162 + 11 HIGH)
+      - nfsd                # NFS server (CVE-2026-93221, CVE-2026-89675)
+      - esp4                # IPsec ESP + espintcp (CVE-2026-68426, CVE-2026-23239)
+      - esp6
+      - esp4_offload
+      - esp6_offload
+      - xfrm_user           # netlink IPsec SA configuration
+      - xfrm_interface
+      - af_key              # PF_KEY IPsec SA configuration
+      # Network protocols not used by the image
+      - sctp
+      - tipc
+      - kcm
+      - smc
+      - tls                 # kernel TLS
+      - amt
+      - mpls_router
+      - mpls_iptunnel
+      - mpls_gso
+      - tap
+      - macvtap
+      - ebtables
+      - ebtable_filter
+      - ebtable_nat
+      - ebtable_broute
+      - nf_flow_table
+      - nf_flow_table_inet
+      - nft_flow_offload
+      - rxrpc
+      - pvcalls_front       # Xen PV calls frontend (not used by EC2 networking)
+      # Network file systems / RPC (NFS client stays enabled for EFS)
+      - cifs                # SMB client (FSx for Windows users: remove)
+      - kafs
+      - nfs_layout_flexfiles
+      - rpcsec_gss_krb5
+      - rpcrdma             # NFS over RDMA (svcrdma)
+      - nvmet_tcp           # NVMe-oF target
+      - nvmet
+      # Local file systems not used by the image (root is ext4)
+      - btrfs
+      - bcachefs
+      - f2fs
+      - erofs
+      - ocfs2
+      - ntfs
+      - ntfs3
+      # Virtualisation host features (bare-metal hypervisor users: remove)
+      - kvm
+      - kvm_intel
+      - kvm_amd
+      - vhost
+      - vhost_net
+      - vhost_vsock
+      - vhost_vdpa
+      - ublk_drv
+      - binder_linux
+      # Hardware that EC2 instances do not expose (ENA/ixgbevf/NVMe stay enabled)
+      - bnxt_en
+      - ice
+      - idpf
+      - ixgbe
+      - mlx4_core
+      - mlx4_ib
+      - mlx5_core
+      - stmmac
+      - stmmac_pci
+      - dwmac_intel
+      - iw_cxgb4
+      - irdma
+      - siw
+      - qla2xxx
+      - tcm_qla2xxx
+      - amdgpu              # G4ad (Radeon) GPU instance users: remove
+      - vkms
+      - intel_vpu
+      - wave5
+      - greybus
+      - gb_raw
+      - r8723bs
+      - usb_f_fs
+      - libcomposite
+      - lkkbd
+      - hid
+      - usbhid
+      - hid_generic
+      - snd
+      - soundcore
+      - snd_seq_oss
+      - snd_usb_audio
+      - snd_soc_avs
+      - bluetooth
+      - btusb
+      - cfg80211
+      - mac80211
+      - ath12k
+      - mt76
+      - rtw89_core
+      - rtw89_pci
+      # Kernel crypto user API for skcipher
+      - algif_skcipher
+
+    # Restrict unprivileged access to affected built-in kernel code.
+    kernel_cve_sysctls:
+      # BPF verifier/sockmap/cgroup kfunc CVEs: no unprivileged bpf(); harden JIT
+      - { name: 'kernel.unprivileged_bpf_disabled', value: '1' }
+      - { name: 'net.core.bpf_jit_harden', value: '2' }
+      # Network-core, netfilter, bridge, ip6mr, rtnetlink CVEs need CAP_NET_ADMIN;
+      # unprivileged users can otherwise get it inside a user namespace.
+      # (Breaks rootless containers; root-run Docker/containerd are unaffected.)
+      - { name: 'kernel.unprivileged_userns_clone', value: '0' }
+      # Make kernel exploitation harder by hiding kernel addresses and logs
+      - { name: 'kernel.kptr_restrict', value: '2' }
+      - { name: 'kernel.dmesg_restrict', value: '1' }
+
   tasks:
 
     # ==========================================================
@@ -1094,6 +1214,124 @@
           blacklist cramfs
           install usb-storage /bin/false
           blacklist usb-storage
+
+    # ----------------------------------------------------------
+    # Kernel CVE exposure reduction (no Ubuntu fix published yet)
+    # ----------------------------------------------------------
+    # Every Trivy CRITICAL/HIGH finding is an unfixed linux-aws-6.8 kernel CVE.
+    # The kernel stays installed and the findings stay reported; the per-CVE
+    # mapping is in docs/TRIVY_KERNEL_CVE_COVERAGE.md. This section:
+    #   1. blocks loadable modules that contain affected code and that an EC2
+    #      server image does not need (play var kernel_cve_blocked_modules);
+    #   2. removes unprivileged paths to affected built-in code (BPF verifier,
+    #      perf, network code reachable through user namespaces) with sysctls.
+    # A derived image that needs one of these features removes the module
+    # from kernel_cve_blocked_modules (the coverage doc lists what each does).
+    - name: Block kernel modules affected by unfixed kernel CVEs
+      ansible.builtin.copy:
+        dest: /etc/modprobe.d/98-golden-image-kernel-cve-mitigation.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          # Managed by Golden Image Factory - see docs/TRIVY_KERNEL_CVE_COVERAGE.md
+          {% for module in kernel_cve_blocked_modules %}
+          install {{ module }} /bin/false
+          blacklist {{ module }}
+          {% endfor %}
+      register: kernel_cve_modprobe_conf
+
+    - name: Rebuild initramfs so early boot honours the module block list
+      ansible.builtin.command:
+        cmd: update-initramfs -u -k all
+      when: kernel_cve_modprobe_conf.changed
+
+    - name: Unload blocked modules and verify none of them can be loaded
+      ansible.builtin.shell: |
+        set -u
+        builtin_list="/lib/modules/$(uname -r)/modules.builtin"
+        rc=0
+        for m in {{ kernel_cve_blocked_modules | join(' ') }}; do
+          if awk '{ print $1 }' /proc/modules | grep -qx "$m"; then
+            if modprobe -r "$m"; then
+              echo "UNLOADED $m"
+            else
+              echo "FAIL $m: loaded and could not be unloaded"; rc=1; continue
+            fi
+          fi
+          if sed -e 's#.*/##' -e 's/\.ko.*$//' -e 's/-/_/g' "$builtin_list" | grep -qx "$m"; then
+            echo "BUILTIN $m: compiled into the kernel, cannot be blocked"
+          elif ! modinfo -F filename "$m" >/dev/null 2>&1; then
+            echo "ABSENT $m: not shipped with this kernel"
+          elif modprobe -n -v "$m" 2>&1 | grep -q '^install /bin/false'; then
+            echo "BLOCKED $m"
+          else
+            echo "FAIL $m: module exists but is not blocked"; rc=1
+          fi
+        done
+        exit "$rc"
+      args:
+        executable: /bin/bash
+      register: kernel_cve_module_report
+      changed_when: "'UNLOADED' in kernel_cve_module_report.stdout"
+
+    - name: Show kernel CVE module block report
+      ansible.builtin.debug:
+        var: kernel_cve_module_report.stdout_lines
+
+    - name: Restrict unprivileged access to built-in kernel code affected by unfixed CVEs
+      ansible.builtin.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: true
+        sysctl_file: /etc/sysctl.d/99-z-golden-image-hardening.conf
+      loop: "{{ kernel_cve_sysctls }}"
+
+    - name: Read the kernel perf_event_paranoid level
+      ansible.builtin.command:
+        cmd: sysctl -n kernel.perf_event_paranoid
+      register: perf_event_paranoid
+      changed_when: false
+
+    # Ubuntu kernels support levels above the upstream maximum of 2; level 3+
+    # denies perf_event_open() to unprivileged users. Only raise it: never
+    # lower a stricter distribution default (Ubuntu may already ship 4).
+    - name: Deny unprivileged perf events
+      ansible.builtin.sysctl:
+        name: kernel.perf_event_paranoid
+        value: '3'
+        state: present
+        reload: true
+        sysctl_file: /etc/sysctl.d/99-z-golden-image-hardening.conf
+      when: perf_event_paranoid.stdout | int < 3
+
+    - name: Verify kernel CVE sysctl restrictions are active
+      ansible.builtin.command:
+        cmd: "sysctl -n {{ item.name }}"
+      register: kernel_cve_sysctl_check
+      changed_when: false
+      failed_when: kernel_cve_sysctl_check.stdout | trim != item.value
+      loop: "{{ kernel_cve_sysctls }}"
+
+    - name: Verify unprivileged perf events are denied
+      ansible.builtin.command:
+        cmd: sysctl -n kernel.perf_event_paranoid
+      register: perf_event_paranoid_check
+      changed_when: false
+      failed_when: perf_event_paranoid_check.stdout | int < 3
+
+    - name: Record kernel build options relevant to the tracked CVEs
+      ansible.builtin.shell: |
+        grep -E '^(# )?CONFIG_(GCOV_KERNEL|NET_HANDSHAKE|BPF_SYSCALL|BPF_JIT|USER_NS|HID|KVM|EXT4_FS|BRIDGE|NFS_FS|NFS_V4|XFRM|IPV6_MROUTE|PSI)[= ]' "/boot/config-$(uname -r)" || true
+      args:
+        executable: /bin/bash
+      register: kernel_cve_config
+      changed_when: false
+
+    - name: Show kernel build options relevant to the tracked CVEs
+      ansible.builtin.debug:
+        var: kernel_cve_config.stdout_lines
 
     - name: Disable core dumps through limits
       ansible.builtin.copy:

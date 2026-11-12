@@ -75,6 +75,48 @@ Trivy reported each CVE against three binary packages. Only one of them (`linux-
 
 **Expected effect on the next scan (to be confirmed by a new build, not yet claimed):** the Critical records should fall from 15 to 5 and the High records from 525 to 175. The five unique Critical CVEs remain open, because the affected code is in the kernel modules package for which Ubuntu has published no fix. Nothing is suppressed or marked as fixed.
 
+### Result of the 12 November 2026 build
+
+The next build confirmed the expected effect: Trivy reported **CRITICAL=5, HIGH=175** against Ubuntu 22.04, and the `--ignore-unfixed` CRITICAL/HIGH report was **empty**. All remaining CRITICAL/HIGH findings are kernel CVEs in `linux-modules-6.8.0-1069-aws` with no Ubuntu fix. No package update can clear them.
+
+## Exposure reduction for unfixed CVEs (12 November 2026)
+
+The findings stay open and reported. Every one of the 180 CRITICAL/HIGH records was mapped to the subsystem its upstream fix touches. The full per-CVE table is in [`TRIVY_KERNEL_CVE_COVERAGE.md`](TRIVY_KERNEL_CVE_COVERAGE.md).
+
+| Category | CRITICAL | HIGH | How |
+|---|---:|---:|---|
+| Module blocked | 3 | 121 | `/etc/modprobe.d/98-golden-image-kernel-cve-mitigation.conf` blocks 94 modules (`install <m> /bin/false` + `blacklist`); initramfs is rebuilt |
+| Restricted (sysctl/userns) | 2 | 37 | `kernel.unprivileged_bpf_disabled=1`, `net.core.bpf_jit_harden=2`, `kernel.unprivileged_userns_clone=0`, `kernel.perf_event_paranoid>=3`, `kernel.kptr_restrict=2`, `kernel.dmesg_restrict=1` |
+| Code not built for x86_64 | 0 | 6 | arm64/s390 KVM, Qualcomm MSM GPU, OMAP framebuffer, Arm FF-A; Trivy matches the source package, not the compiled kernel |
+| Residual | 0 | 11 | ext4 (root fs), nftables `nft_ct`/`x_tables` (firewall), `bridge` (containers), NFS client (EFS), IOMMU, fcntl, PSI |
+| **Total** | **5** | **175** | |
+
+For the five CRITICAL CVEs:
+
+| CVE | Mitigation |
+|---|---|
+| CVE-2026-90162 (ksmbd) | `ksmbd` blocked |
+| CVE-2026-93221 (NFS server) | `nfsd` blocked (`lockd` stays: the NFS client and EFS need it) |
+| CVE-2026-68426 (XFRM/ESP GSO) | `esp4`, `esp6`, both `_offload` modules, `xfrm_user`, `xfrm_interface`, `af_key` blocked |
+| CVE-2026-64523 (net/handshake) | Built in. Consumers `nfsd` and `nvmet_tcp` are blocked; NFS-client TLS could still use it |
+| CVE-2026-63825 (GCOV) | Only reachable if the kernel has `CONFIG_GCOV_KERNEL`; the build log records the setting |
+
+**Build-time checks:** the playbook unloads any blocked module that is loaded. It then classifies each one as `BLOCKED`, `BUILTIN` (cannot be blocked) or `ABSENT` (not shipped with this kernel), and fails the build if a shipped module is loadable or still loaded. It also verifies every sysctl and prints the module report and the related kernel config options. Check the `BUILTIN` lines in the next build log: those CVEs move from "Module blocked" to "Residual".
+
+**Impact on derived images.** Remove the module from `kernel_cve_blocked_modules` in the playbook if a workload needs:
+
+- an in-kernel SMB/NFS server, kernel IPsec (strongSwan/libreswan), or kernel TLS
+- the SMB client (`cifs`, e.g. FSx for Windows)
+- KVM/vhost on bare-metal instances
+- `amdgpu` on G4ad instances
+- SCTP, or btrfs/f2fs/other non-ext4 file systems
+
+`kernel.unprivileged_userns_clone=0` breaks rootless containers and some browser sandboxes; root-run Docker/containerd are unaffected.
+
+**This does not change Trivy counts.** Trivy matches package versions, not loaded modules or sysctls, so CRITICAL=5 / HIGH=175 will be reported until Ubuntu publishes a fixed `linux-aws-6.8` package and the AMI is rebuilt. Remove the mitigation file and sysctls only after a fixed kernel is installed and confirmed.
+
+**Regenerating the coverage table** after a new scan: map each new CVE's upstream subject to a category, then update `kernel_cve_blocked_modules` and the coverage doc together.
+
 ## Monitoring
 
 A read-only GitHub Actions workflow, `.github/workflows/monitor-kernel-cves.yml`, checks the Ubuntu Security Tracker pages every Monday and can also be run manually. It checks the Jammy status for the exact `linux-aws-6.8` package row. It does not access AWS, modify the image, or change the kernel.

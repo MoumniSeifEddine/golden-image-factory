@@ -42,6 +42,8 @@ This file records the changes made during the project hardening pass. It is not 
 
 - Removed the AWS kernel header packages (and the `linux-aws`/`linux-headers-aws` meta-packages that pull them in) in addition to the kernel tools packages. Headers are only needed to compile out-of-tree modules; removing them eliminates two of the three packages Trivy attributed the kernel CVEs to, without touching the kernel image or modules. `linux-image-aws` is kept (marked manual) so kernel updates continue. Remaining kernel CVEs stay open and documented in `docs/TRIVY_KERNEL_CVE_TRACKING.md`.
 
+- Build of 12 November 2026: Trivy CRITICAL=5 / HIGH=175, all in `linux-modules-6.8.0-1069-aws` with no Ubuntu fix (the `--ignore-unfixed` subset is empty). Following the keep-the-kernel, no-suppression policy, each CVE was mapped to its subsystem (`docs/TRIVY_KERNEL_CVE_COVERAGE.md`). The playbook now blocks 94 unused kernel modules (`kernel_cve_blocked_modules`; covers 3 CRITICAL + 121 HIGH) and sets BPF/perf/user-namespace/kptr sysctls (2 CRITICAL + 37 HIGH). 6 HIGH are for code not built on x86_64 and 11 HIGH remain residual. The build fails if a shipped blocked module can still load or a sysctl is not active. This reduces exploitability; it does not change Trivy counts. See `docs/TRIVY_KERNEL_CVE_TRACKING.md`.
+
 ### Terraform and lifecycle
 
 - Replaced use of the default security group with a dedicated validation security group containing no inbound rules.
